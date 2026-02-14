@@ -3,6 +3,7 @@ package wda
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -29,14 +30,18 @@ type Driver struct {
 
 	// Typing speed (0 = use WDA default of 60 keys/sec)
 	typingFrequency int
+
+	// Selector validation dedup
+	warnedFields map[string]bool
 }
 
 // NewDriver creates a new WDA driver.
 func NewDriver(client *Client, info *core.PlatformInfo, udid string) *Driver {
 	return &Driver{
-		client: client,
-		info:   info,
-		udid:   udid,
+		client:       client,
+		info:         info,
+		udid:         udid,
+		warnedFields: make(map[string]bool),
 	}
 }
 
@@ -238,6 +243,16 @@ func (d *Driver) GetPlatformInfo() *core.PlatformInfo {
 
 // findElement finds an element using a selector with polling.
 func (d *Driver) findElement(sel flow.Selector, optional bool, stepTimeoutMs int) (*core.ElementInfo, error) {
+	// Warn about unsupported selector fields (once per field)
+	if unsupported := flow.CheckUnsupportedFields(&sel, "ios"); len(unsupported) > 0 {
+		for _, field := range unsupported {
+			if !d.warnedFields[field] {
+				d.warnedFields[field] = true
+				log.Printf("[wda] warning: %q is not supported on ios — will be ignored", field)
+			}
+		}
+	}
+
 	timeout := d.calculateTimeout(optional, stepTimeoutMs)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

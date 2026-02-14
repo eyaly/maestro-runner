@@ -578,6 +578,51 @@ func TestSelector_DescribeQuoted(t *testing.T) {
 			selector: Selector{Text: `Hello "World"`},
 			expected: `text="Hello "World""`,
 		},
+		{
+			name:     "testId selector",
+			selector: Selector{TestID: "submit-btn"},
+			expected: `testId="submit-btn"`,
+		},
+		{
+			name:     "role selector",
+			selector: Selector{Role: "button"},
+			expected: `role="button"`,
+		},
+		{
+			name:     "placeholder selector",
+			selector: Selector{Placeholder: "Search..."},
+			expected: `placeholder="Search..."`,
+		},
+		{
+			name:     "href selector",
+			selector: Selector{Href: "/about"},
+			expected: `href="/about"`,
+		},
+		{
+			name:     "alt selector",
+			selector: Selector{Alt: "Logo"},
+			expected: `alt="Logo"`,
+		},
+		{
+			name:     "title selector",
+			selector: Selector{Title: "Info"},
+			expected: `title="Info"`,
+		},
+		{
+			name:     "name selector",
+			selector: Selector{Name: "email"},
+			expected: `name="email"`,
+		},
+		{
+			name:     "textContains selector",
+			selector: Selector{TextContains: "Welcome"},
+			expected: `textContains="Welcome"`,
+		},
+		{
+			name:     "textRegex selector",
+			selector: Selector{TextRegex: "Hello.*"},
+			expected: `textRegex="Hello.*"`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -637,4 +682,435 @@ invalid_nested:
 	if err == nil {
 		t.Error("expected error for invalid YAML, got nil")
 	}
+}
+
+func TestSelector_UnmarshalYAML_NewFields(t *testing.T) {
+	tests := []struct {
+		name     string
+		yaml     string
+		validate func(t *testing.T, s *Selector)
+	}{
+		{
+			name: "placeholder",
+			yaml: `placeholder: "Search..."`,
+			validate: func(t *testing.T, s *Selector) {
+				if s.Placeholder != "Search..." {
+					t.Errorf("got Placeholder=%q, want Search...", s.Placeholder)
+				}
+			},
+		},
+		{
+			name: "role",
+			yaml: `role: button`,
+			validate: func(t *testing.T, s *Selector) {
+				if s.Role != "button" {
+					t.Errorf("got Role=%q, want button", s.Role)
+				}
+			},
+		},
+		{
+			name: "textContains",
+			yaml: `textContains: Welcome`,
+			validate: func(t *testing.T, s *Selector) {
+				if s.TextContains != "Welcome" {
+					t.Errorf("got TextContains=%q, want Welcome", s.TextContains)
+				}
+			},
+		},
+		{
+			name: "href",
+			yaml: `href: /about`,
+			validate: func(t *testing.T, s *Selector) {
+				if s.Href != "/about" {
+					t.Errorf("got Href=%q, want /about", s.Href)
+				}
+			},
+		},
+		{
+			name: "alt",
+			yaml: `alt: "Company logo"`,
+			validate: func(t *testing.T, s *Selector) {
+				if s.Alt != "Company logo" {
+					t.Errorf("got Alt=%q, want Company logo", s.Alt)
+				}
+			},
+		},
+		{
+			name: "title",
+			yaml: `title: "More info"`,
+			validate: func(t *testing.T, s *Selector) {
+				if s.Title != "More info" {
+					t.Errorf("got Title=%q, want More info", s.Title)
+				}
+			},
+		},
+		{
+			name: "name",
+			yaml: `name: email`,
+			validate: func(t *testing.T, s *Selector) {
+				if s.Name != "email" {
+					t.Errorf("got Name=%q, want email", s.Name)
+				}
+			},
+		},
+		{
+			name: "testId",
+			yaml: `testId: submit-btn`,
+			validate: func(t *testing.T, s *Selector) {
+				if s.TestID != "submit-btn" {
+					t.Errorf("got TestID=%q, want submit-btn", s.TestID)
+				}
+			},
+		},
+		{
+			name: "textRegex",
+			yaml: `textRegex: "Welcome.*"`,
+			validate: func(t *testing.T, s *Selector) {
+				if s.TextRegex != "Welcome.*" {
+					t.Errorf("got TextRegex=%q, want Welcome.*", s.TextRegex)
+				}
+			},
+		},
+		{
+			name: "nth",
+			yaml: `
+css: ".item"
+nth: 2
+`,
+			validate: func(t *testing.T, s *Selector) {
+				if s.Nth != 2 {
+					t.Errorf("got Nth=%d, want 2", s.Nth)
+				}
+				if s.CSS != ".item" {
+					t.Errorf("got CSS=%q, want .item", s.CSS)
+				}
+			},
+		},
+		{
+			name: "role with text",
+			yaml: `
+role: button
+text: Submit
+`,
+			validate: func(t *testing.T, s *Selector) {
+				if s.Role != "button" {
+					t.Errorf("got Role=%q, want button", s.Role)
+				}
+				if s.Text != "Submit" {
+					t.Errorf("got Text=%q, want Submit", s.Text)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var s Selector
+			if err := yaml.Unmarshal([]byte(tt.yaml), &s); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			tt.validate(t, &s)
+		})
+	}
+}
+
+func TestSelector_Describe_NewFields(t *testing.T) {
+	tests := []struct {
+		name     string
+		selector Selector
+		expected string
+	}{
+		{
+			name:     "testId",
+			selector: Selector{TestID: "submit-btn"},
+			expected: "testId:submit-btn",
+		},
+		{
+			name:     "role",
+			selector: Selector{Role: "button"},
+			expected: "role:button",
+		},
+		{
+			name:     "placeholder",
+			selector: Selector{Placeholder: "Search..."},
+			expected: "placeholder:Search...",
+		},
+		{
+			name:     "href",
+			selector: Selector{Href: "/about"},
+			expected: "href:/about",
+		},
+		{
+			name:     "alt",
+			selector: Selector{Alt: "Logo"},
+			expected: "alt:Logo",
+		},
+		{
+			name:     "title",
+			selector: Selector{Title: "Info"},
+			expected: "title:Info",
+		},
+		{
+			name:     "name",
+			selector: Selector{Name: "email"},
+			expected: "name:email",
+		},
+		{
+			name:     "textContains",
+			selector: Selector{TextContains: "Welcome"},
+			expected: "textContains:Welcome",
+		},
+		{
+			name:     "textRegex",
+			selector: Selector{TextRegex: "Hello.*"},
+			expected: "textRegex:Hello.*",
+		},
+		{
+			name:     "text takes precedence over new fields",
+			selector: Selector{Text: "Login", Role: "button"},
+			expected: "Login",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.selector.Describe()
+			if got != tt.expected {
+				t.Errorf("Describe()=%q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSelector_IsEmpty_NewFields(t *testing.T) {
+	tests := []struct {
+		name     string
+		selector Selector
+		expected bool
+	}{
+		{name: "placeholder set", selector: Selector{Placeholder: "Search"}, expected: false},
+		{name: "role set", selector: Selector{Role: "button"}, expected: false},
+		{name: "textContains set", selector: Selector{TextContains: "Hello"}, expected: false},
+		{name: "href set", selector: Selector{Href: "/about"}, expected: false},
+		{name: "alt set", selector: Selector{Alt: "Logo"}, expected: false},
+		{name: "title set", selector: Selector{Title: "Info"}, expected: false},
+		{name: "name set", selector: Selector{Name: "email"}, expected: false},
+		{name: "testId set", selector: Selector{TestID: "btn"}, expected: false},
+		{name: "textRegex set", selector: Selector{TextRegex: ".*"}, expected: false},
+		{name: "only nth set - still empty", selector: Selector{Nth: 1}, expected: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.selector.IsEmpty()
+			if got != tt.expected {
+				t.Errorf("IsEmpty()=%v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCheckUnsupportedFields(t *testing.T) {
+	tests := []struct {
+		name        string
+		selector    Selector
+		platform    string
+		unsupported []string
+	}{
+		{
+			name:        "text on android - supported",
+			selector:    Selector{Text: "Login"},
+			platform:    "android",
+			unsupported: nil,
+		},
+		{
+			name:        "placeholder on android - unsupported",
+			selector:    Selector{Placeholder: "Search"},
+			platform:    "android",
+			unsupported: []string{"placeholder"},
+		},
+		{
+			name:        "placeholder on web - supported",
+			selector:    Selector{Placeholder: "Search"},
+			platform:    "web",
+			unsupported: nil,
+		},
+		{
+			name:        "css on ios - unsupported",
+			selector:    Selector{CSS: "#login"},
+			platform:    "ios",
+			unsupported: []string{"css"},
+		},
+		{
+			name:        "checked on ios - unsupported",
+			selector:    Selector{Checked: boolPtr(true)},
+			platform:    "ios",
+			unsupported: []string{"checked"},
+		},
+		{
+			name:        "width on web - unsupported",
+			selector:    Selector{Width: 100},
+			platform:    "web",
+			unsupported: []string{"width"},
+		},
+		{
+			name:        "multiple unsupported on web",
+			selector:    Selector{Width: 100, Height: 50, Index: "1"},
+			platform:    "web",
+			unsupported: []string{"width", "height", "index"},
+		},
+		{
+			name:        "relative selector on web - unsupported",
+			selector:    Selector{Below: &Selector{Text: "Header"}},
+			platform:    "web",
+			unsupported: []string{"below"},
+		},
+		{
+			name:        "role on web - supported",
+			selector:    Selector{Role: "button"},
+			platform:    "web",
+			unsupported: nil,
+		},
+		{
+			name:        "testId on web - supported",
+			selector:    Selector{TestID: "submit"},
+			platform:    "web",
+			unsupported: nil,
+		},
+		{
+			name:        "unknown platform - no warnings",
+			selector:    Selector{Placeholder: "Search"},
+			platform:    "unknown",
+			unsupported: nil,
+		},
+		{
+			name:        "empty selector - no warnings",
+			selector:    Selector{},
+			platform:    "android",
+			unsupported: nil,
+		},
+		{
+			name:        "traits on any platform - unsupported everywhere",
+			selector:    Selector{Traits: "button"},
+			platform:    "android",
+			unsupported: []string{"traits"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CheckUnsupportedFields(&tt.selector, tt.platform)
+			if len(got) != len(tt.unsupported) {
+				t.Errorf("CheckUnsupportedFields()=%v, want %v", got, tt.unsupported)
+				return
+			}
+			for i, field := range got {
+				if field != tt.unsupported[i] {
+					t.Errorf("CheckUnsupportedFields()[%d]=%q, want %q", i, field, tt.unsupported[i])
+				}
+			}
+		})
+	}
+}
+
+func TestExtractSelectors(t *testing.T) {
+	tests := []struct {
+		name     string
+		step     Step
+		expected int // number of selectors
+	}{
+		{
+			name:     "TapOnStep",
+			step:     &TapOnStep{Selector: Selector{Text: "Login"}},
+			expected: 1,
+		},
+		{
+			name:     "AssertVisibleStep",
+			step:     &AssertVisibleStep{Selector: Selector{ID: "btn"}},
+			expected: 1,
+		},
+		{
+			name:     "WaitUntilStep with visible",
+			step:     &WaitUntilStep{Visible: &Selector{Text: "Done"}},
+			expected: 1,
+		},
+		{
+			name:     "WaitUntilStep with both",
+			step:     &WaitUntilStep{Visible: &Selector{Text: "Done"}, NotVisible: &Selector{Text: "Loading"}},
+			expected: 2,
+		},
+		{
+			name:     "BackStep - no selector",
+			step:     &BackStep{},
+			expected: 0,
+		},
+		{
+			name:     "SwipeStep with selector",
+			step:     &SwipeStep{Selector: &Selector{Text: "List"}},
+			expected: 1,
+		},
+		{
+			name:     "SwipeStep without selector",
+			step:     &SwipeStep{},
+			expected: 0,
+		},
+		{
+			name:     "DoubleTapOnStep",
+			step:     &DoubleTapOnStep{Selector: Selector{Text: "OK"}},
+			expected: 1,
+		},
+		{
+			name:     "LongPressOnStep",
+			step:     &LongPressOnStep{Selector: Selector{ID: "item"}},
+			expected: 1,
+		},
+		{
+			name:     "ScrollUntilVisibleStep",
+			step:     &ScrollUntilVisibleStep{Element: Selector{Text: "Bottom"}},
+			expected: 1,
+		},
+		{
+			name:     "InputTextStep",
+			step:     &InputTextStep{Selector: Selector{ID: "input"}},
+			expected: 1,
+		},
+		{
+			name:     "CopyTextFromStep",
+			step:     &CopyTextFromStep{Selector: Selector{Text: "Value"}},
+			expected: 1,
+		},
+		{
+			name:     "AssertNotVisibleStep",
+			step:     &AssertNotVisibleStep{Selector: Selector{Text: "Error"}},
+			expected: 1,
+		},
+		{
+			name:     "AssertConditionStep with visible",
+			step:     &AssertConditionStep{Condition: Condition{Visible: &Selector{Text: "OK"}}},
+			expected: 1,
+		},
+		{
+			name:     "AssertConditionStep with both",
+			step:     &AssertConditionStep{Condition: Condition{Visible: &Selector{Text: "OK"}, NotVisible: &Selector{Text: "Error"}}},
+			expected: 2,
+		},
+		{
+			name:     "LaunchAppStep - no selector",
+			step:     &LaunchAppStep{},
+			expected: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractSelectors(tt.step)
+			if len(got) != tt.expected {
+				t.Errorf("ExtractSelectors() returned %d selectors, want %d", len(got), tt.expected)
+			}
+		})
+	}
+}
+
+func boolPtr(b bool) *bool {
+	return &b
 }

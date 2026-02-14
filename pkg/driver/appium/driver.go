@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -25,6 +26,7 @@ type Driver struct {
 	currentWaitForIdleTimeout int                    // track current value to skip redundant calls
 	waitForIdleTimeoutSet     bool                   // whether waitForIdleTimeout has been set
 	lastTappedElementID       string                 // iOS: last element clicked via ClickElement, used by inputText
+	warnedFields              map[string]bool
 }
 
 // NewDriver creates a new Appium driver.
@@ -42,6 +44,7 @@ func NewDriver(serverURL string, capabilities map[string]interface{}) (*Driver, 
 		client:       client,
 		capabilities: savedCaps,
 		platform:     client.Platform(),
+		warnedFields: make(map[string]bool),
 	}
 
 	// Extract app ID from capabilities
@@ -257,6 +260,20 @@ func (d *Driver) getFindTimeout() time.Duration {
 
 // findElement finds an element by selector with timeout.
 func (d *Driver) findElement(sel flow.Selector, timeout time.Duration) (*core.ElementInfo, error) {
+	// Warn about unsupported selector fields (once per field)
+	platform := d.platform
+	if platform == "" {
+		platform = "android"
+	}
+	if unsupported := flow.CheckUnsupportedFields(&sel, platform); len(unsupported) > 0 {
+		for _, field := range unsupported {
+			if !d.warnedFields[field] {
+				d.warnedFields[field] = true
+				log.Printf("[appium] warning: %q is not supported on %s — will be ignored", field, platform)
+			}
+		}
+	}
+
 	if timeout <= 0 {
 		timeout = d.getFindTimeout()
 	}

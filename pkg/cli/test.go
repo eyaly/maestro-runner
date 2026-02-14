@@ -736,6 +736,11 @@ func executeTest(cfg *RunConfig) error {
 	}
 	logger.Info("Validated %d flow(s)", len(flows))
 
+	// Warn about unsupported selector fields for the target platform
+	if cfg.Platform != "" {
+		warnUnsupportedSelectors(flows, cfg.Platform)
+	}
+
 	// Pre-checks for iOS with direct WDA driver (not Appium).
 	// Appium handles everything via capabilities — no --app-file or --team-id needed.
 	if strings.EqualFold(cfg.Platform, "ios") && cfg.Driver != "appium" {
@@ -899,6 +904,40 @@ func validateAndParseFlows(cfg *RunConfig) ([]flow.Flow, error) {
 	}
 
 	return flows, nil
+}
+
+// warnUnsupportedSelectors walks all steps in all flows, checks each selector
+// against the target platform's supported set, and prints warnings for any
+// unsupported fields. Deduplicates so each field is warned about only once.
+func warnUnsupportedSelectors(flows []flow.Flow, platform string) {
+	warned := make(map[string]bool)
+	var warnings []string
+
+	for _, f := range flows {
+		for _, step := range f.Steps {
+			selectors := flow.ExtractSelectors(step)
+			for _, sel := range selectors {
+				unsupported := flow.CheckUnsupportedFields(sel, platform)
+				for _, field := range unsupported {
+					key := field + "+" + platform
+					if !warned[key] {
+						warned[key] = true
+						warnings = append(warnings,
+							fmt.Sprintf("  %s\u26a0%s  %q is not supported on %s — will be ignored (%s)",
+								color(colorYellow), color(colorReset), field, platform, f.SourcePath))
+					}
+				}
+			}
+		}
+	}
+
+	if len(warnings) > 0 {
+		fmt.Println()
+		for _, w := range warnings {
+			fmt.Println(w)
+		}
+		fmt.Println()
+	}
 }
 
 // flowsUseClearState checks if any flow uses clearState (standalone or via launchApp).
@@ -1506,6 +1545,8 @@ func CreateDriver(cfg *RunConfig) (core.Driver, func(), error) {
 		return CreateAndroidDriver(cfg)
 	case "ios":
 		return CreateIOSDriver(cfg)
+	case "web":
+		return CreateWebDriver(cfg)
 	default:
 		return nil, nil, fmt.Errorf("unsupported platform: %s", platform)
 	}

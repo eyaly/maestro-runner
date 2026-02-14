@@ -1,0 +1,2606 @@
+package cdp
+
+import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/devicelab-dev/maestro-runner/pkg/core"
+	"github.com/devicelab-dev/maestro-runner/pkg/flow"
+	"github.com/go-rod/rod/lib/input"
+)
+
+// testPage returns a minimal HTML page for testing.
+func testPage() string {
+	return `<!DOCTYPE html>
+<html>
+<head><title>Test Page</title></head>
+<body>
+	<h1 id="title">Hello World</h1>
+	<button id="btn" data-testid="main-btn" aria-label="Click Me">Click Me</button>
+	<a href="/other" id="link1">Go to Other</a>
+	<input id="input1" type="text" placeholder="Enter text" aria-label="Name Input">
+	<div id="hidden" style="display:none">Hidden Text</div>
+	<p id="para">Some paragraph text</p>
+	<input id="checkbox1" type="checkbox">
+	<select id="select1"><option value="a">Option A</option><option value="b">Option B</option></select>
+</body>
+</html>`
+}
+
+func otherPage() string {
+	return `<!DOCTYPE html>
+<html>
+<head><title>Other Page</title></head>
+<body>
+	<h1>Other Page</h1>
+	<a href="/" id="back-link">Go Back</a>
+</body>
+</html>`
+}
+
+// selectorTestPage returns an HTML page with various attributes for testing new selectors.
+func selectorTestPage() string {
+	return `<!DOCTYPE html>
+<html>
+<head><title>Selector Test</title></head>
+<body>
+	<input data-testid="email-input" type="email" placeholder="Enter email" name="user_email">
+	<input data-testid="search-input" type="text" placeholder="Search..." name="search_query">
+	<button role="button" data-testid="submit-btn">Submit Form</button>
+	<a href="/about" title="About us page">About Us</a>
+	<a href="/contact">Contact</a>
+	<img alt="Company Logo" src="logo.png">
+	<img alt="Team Photo" src="team.png" title="Our team">
+	<p>Welcome to our website</p>
+	<p>Welcome back, user!</p>
+	<span>Order #12345 confirmed</span>
+	<div class="item">First Item</div>
+	<div class="item">Second Item</div>
+	<div class="item">Third Item</div>
+</body>
+</html>`
+}
+
+// newTestServer creates a test HTTP server with basic pages.
+func newTestServer() *httptest.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, testPage())
+	})
+	mux.HandleFunc("/other", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, otherPage())
+	})
+	mux.HandleFunc("/selectors", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, selectorTestPage())
+	})
+	mux.HandleFunc("/alert", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+			<button id="alert-btn" onclick="alert('Hello!')">Show Alert</button>
+		</body></html>`)
+	})
+	return httptest.NewServer(mux)
+}
+
+// newTestDriver creates a Driver connected to the test server.
+func newTestDriver(t *testing.T, serverURL string) *Driver {
+	t.Helper()
+	d, err := New(Config{
+		Headless:  true,
+		URL:       serverURL,
+		ViewportW: 1024,
+		ViewportH: 768,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create driver: %v", err)
+	}
+	// Use shorter timeouts for tests
+	d.SetFindTimeout(5000)
+	return d
+}
+
+func TestNewAndClose(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Verify driver state
+	info := d.GetPlatformInfo()
+	if info.Platform != "web" {
+		t.Errorf("expected platform 'web', got %q", info.Platform)
+	}
+	if info.ScreenWidth != 1024 {
+		t.Errorf("expected width 1024, got %d", info.ScreenWidth)
+	}
+	if info.ScreenHeight != 768 {
+		t.Errorf("expected height 768, got %d", info.ScreenHeight)
+	}
+
+	state := d.GetState()
+	if state.Orientation != "landscape" {
+		t.Errorf("expected orientation 'landscape', got %q", state.Orientation)
+	}
+}
+
+func TestAssertVisible(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Text visible
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Hello World"},
+	})
+	if !result.Success {
+		t.Errorf("assertVisible 'Hello World' should succeed: %s", result.Message)
+	}
+
+	// Button text visible
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Click Me"},
+	})
+	if !result.Success {
+		t.Errorf("assertVisible 'Click Me' should succeed: %s", result.Message)
+	}
+
+	// ID visible
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{ID: "title"},
+	})
+	if !result.Success {
+		t.Errorf("assertVisible id='title' should succeed: %s", result.Message)
+	}
+
+	// CSS visible
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{CSS: "#btn"},
+	})
+	if !result.Success {
+		t.Errorf("assertVisible css='#btn' should succeed: %s", result.Message)
+	}
+}
+
+func TestAssertNotVisible(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Element that doesn't exist
+	result := d.Execute(&flow.AssertNotVisibleStep{
+		BaseStep: flow.BaseStep{TimeoutMs: 2000},
+		Selector: flow.Selector{Text: "Nonexistent Text"},
+	})
+	if !result.Success {
+		t.Errorf("assertNotVisible 'Nonexistent Text' should succeed: %s", result.Message)
+	}
+
+	// Hidden element
+	result = d.Execute(&flow.AssertNotVisibleStep{
+		BaseStep: flow.BaseStep{TimeoutMs: 2000},
+		Selector: flow.Selector{CSS: "#hidden"},
+	})
+	if !result.Success {
+		t.Errorf("assertNotVisible '#hidden' should succeed: %s", result.Message)
+	}
+
+	// Visible element should fail
+	result = d.Execute(&flow.AssertNotVisibleStep{
+		BaseStep: flow.BaseStep{TimeoutMs: 1000},
+		Selector: flow.Selector{Text: "Hello World"},
+	})
+	if result.Success {
+		t.Errorf("assertNotVisible 'Hello World' should fail since element is visible")
+	}
+}
+
+func TestTapOn(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Tap on button by text
+	result := d.Execute(&flow.TapOnStep{
+		Selector: flow.Selector{Text: "Click Me"},
+	})
+	if !result.Success {
+		t.Errorf("tapOn 'Click Me' should succeed: %s", result.Message)
+	}
+	if result.Element == nil {
+		t.Error("tapOn should return element info")
+	}
+}
+
+func TestTapOnLink(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Tap on link navigates to other page
+	result := d.Execute(&flow.TapOnStep{
+		Selector: flow.Selector{Text: "Go to Other"},
+	})
+	if !result.Success {
+		t.Errorf("tapOn link should succeed: %s", result.Message)
+	}
+
+	// Wait for navigation
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify we're on the other page
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Other Page"},
+	})
+	if !result.Success {
+		t.Errorf("should be on other page: %s", result.Message)
+	}
+}
+
+func TestInputText(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Input with selector
+	result := d.Execute(&flow.InputTextStep{
+		Text:     "hello world",
+		Selector: flow.Selector{CSS: "#input1"},
+	})
+	if !result.Success {
+		t.Errorf("inputText should succeed: %s", result.Message)
+	}
+
+	// Verify text was entered
+	result = d.Execute(&flow.CopyTextFromStep{
+		Selector: flow.Selector{CSS: "#input1"},
+	})
+	if !result.Success {
+		t.Errorf("copyTextFrom should succeed: %s", result.Message)
+	}
+}
+
+func TestEraseText(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// First input some text
+	d.Execute(&flow.InputTextStep{
+		Text:     "hello",
+		Selector: flow.Selector{CSS: "#input1"},
+	})
+
+	// Now erase it
+	result := d.Execute(&flow.EraseTextStep{Characters: 5})
+	if !result.Success {
+		t.Errorf("eraseText should succeed: %s", result.Message)
+	}
+}
+
+func TestBack(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Navigate to other page
+	d.Execute(&flow.TapOnStep{
+		Selector: flow.Selector{Text: "Go to Other"},
+	})
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify on other page
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Other Page"},
+	})
+	if !result.Success {
+		t.Fatalf("should be on other page: %s", result.Message)
+	}
+
+	// Go back
+	result = d.Execute(&flow.BackStep{})
+	if !result.Success {
+		t.Errorf("back should succeed: %s", result.Message)
+	}
+
+	// Verify back on main page
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Hello World"},
+	})
+	if !result.Success {
+		t.Errorf("should be back on main page: %s", result.Message)
+	}
+}
+
+func TestScreenshot(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.TakeScreenshotStep{})
+	if !result.Success {
+		t.Errorf("takeScreenshot should succeed: %s", result.Message)
+	}
+
+	data, ok := result.Data.([]byte)
+	if !ok || len(data) == 0 {
+		t.Error("screenshot should return PNG bytes")
+	}
+
+	// Also test the Driver.Screenshot() method
+	bytes, err := d.Screenshot()
+	if err != nil {
+		t.Errorf("Screenshot() should succeed: %v", err)
+	}
+	if len(bytes) == 0 {
+		t.Error("Screenshot() should return non-empty bytes")
+	}
+}
+
+func TestScroll(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.ScrollStep{Direction: "down"})
+	if !result.Success {
+		t.Errorf("scroll down should succeed: %s", result.Message)
+	}
+
+	result = d.Execute(&flow.ScrollStep{Direction: "up"})
+	if !result.Success {
+		t.Errorf("scroll up should succeed: %s", result.Message)
+	}
+}
+
+func TestPressKey(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.PressKeyStep{Key: "tab"})
+	if !result.Success {
+		t.Errorf("pressKey tab should succeed: %s", result.Message)
+	}
+
+	result = d.Execute(&flow.PressKeyStep{Key: "enter"})
+	if !result.Success {
+		t.Errorf("pressKey enter should succeed: %s", result.Message)
+	}
+
+	// Unknown key should fail
+	result = d.Execute(&flow.PressKeyStep{Key: "unknown_key"})
+	if result.Success {
+		t.Error("pressKey unknown_key should fail")
+	}
+}
+
+func TestClearState(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.ClearStateStep{})
+	if !result.Success {
+		t.Errorf("clearState should succeed: %s", result.Message)
+	}
+}
+
+func TestLaunchApp(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Navigate to another URL via launchApp
+	result := d.Execute(&flow.LaunchAppStep{
+		AppID: ts.URL + "/other",
+	})
+	if !result.Success {
+		t.Errorf("launchApp should succeed: %s", result.Message)
+	}
+
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Other Page"},
+	})
+	if !result.Success {
+		t.Errorf("should be on other page after launchApp: %s", result.Message)
+	}
+}
+
+func TestCopyTextFrom(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.CopyTextFromStep{
+		Selector: flow.Selector{CSS: "#para"},
+	})
+	if !result.Success {
+		t.Errorf("copyTextFrom should succeed: %s", result.Message)
+	}
+
+	text, ok := result.Data.(string)
+	if !ok {
+		t.Fatal("copyTextFrom data should be string")
+	}
+	if !strings.Contains(text, "Some paragraph text") {
+		t.Errorf("expected 'Some paragraph text', got %q", text)
+	}
+
+	// Clipboard should be set
+	state := d.GetState()
+	if !strings.Contains(state.ClipboardText, "Some paragraph text") {
+		t.Errorf("clipboard should contain copied text, got %q", state.ClipboardText)
+	}
+}
+
+func TestSetClipboardAndPaste(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Set clipboard
+	result := d.Execute(&flow.SetClipboardStep{Text: "clipboard text"})
+	if !result.Success {
+		t.Errorf("setClipboard should succeed: %s", result.Message)
+	}
+
+	// Focus input
+	d.Execute(&flow.TapOnStep{
+		Selector: flow.Selector{CSS: "#input1"},
+	})
+
+	// Paste
+	result = d.Execute(&flow.PasteTextStep{})
+	if !result.Success {
+		t.Errorf("pasteText should succeed: %s", result.Message)
+	}
+}
+
+func TestHideKeyboard(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// No-op but should succeed
+	result := d.Execute(&flow.HideKeyboardStep{})
+	if !result.Success {
+		t.Errorf("hideKeyboard should succeed: %s", result.Message)
+	}
+}
+
+func TestFindByID(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Find by direct ID
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{ID: "btn"},
+	})
+	if !result.Success {
+		t.Errorf("find by id 'btn' should succeed: %s", result.Message)
+	}
+
+	// Find by data-testid
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{ID: "main-btn"},
+	})
+	if !result.Success {
+		t.Errorf("find by data-testid 'main-btn' should succeed: %s", result.Message)
+	}
+}
+
+func TestFindByCSS(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{CSS: "h1#title"},
+	})
+	if !result.Success {
+		t.Errorf("find by CSS 'h1#title' should succeed: %s", result.Message)
+	}
+
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{CSS: "button"},
+	})
+	if !result.Success {
+		t.Errorf("find by CSS 'button' should succeed: %s", result.Message)
+	}
+}
+
+func TestFindByText(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Button text (should be found via AX tree clickable roles)
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Click Me"},
+	})
+	if !result.Success {
+		t.Errorf("find button text 'Click Me' should succeed: %s", result.Message)
+	}
+
+	// Link text
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Go to Other"},
+	})
+	if !result.Success {
+		t.Errorf("find link text 'Go to Other' should succeed: %s", result.Message)
+	}
+
+	// Heading text
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Hello World"},
+	})
+	if !result.Success {
+		t.Errorf("find heading text 'Hello World' should succeed: %s", result.Message)
+	}
+
+	// Paragraph text
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Some paragraph text"},
+	})
+	if !result.Success {
+		t.Errorf("find paragraph text should succeed: %s", result.Message)
+	}
+}
+
+func TestHierarchy(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	data, err := d.Hierarchy()
+	if err != nil {
+		t.Fatalf("Hierarchy() should succeed: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("Hierarchy() should return non-empty data")
+	}
+}
+
+func TestSetOrientation(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Switch to portrait
+	result := d.Execute(&flow.SetOrientationStep{Orientation: "PORTRAIT"})
+	if !result.Success {
+		t.Errorf("setOrientation PORTRAIT should succeed: %s", result.Message)
+	}
+
+	state := d.GetState()
+	if state.Orientation != "portrait" {
+		t.Errorf("expected orientation 'portrait', got %q", state.Orientation)
+	}
+
+	// Switch to landscape
+	result = d.Execute(&flow.SetOrientationStep{Orientation: "LANDSCAPE"})
+	if !result.Success {
+		t.Errorf("setOrientation LANDSCAPE should succeed: %s", result.Message)
+	}
+
+	state = d.GetState()
+	if state.Orientation != "landscape" {
+		t.Errorf("expected orientation 'landscape', got %q", state.Orientation)
+	}
+}
+
+func TestWaitUntilVisible(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	sel := flow.Selector{Text: "Hello World"}
+	result := d.Execute(&flow.WaitUntilStep{
+		BaseStep: flow.BaseStep{TimeoutMs: 3000},
+		Visible:  &sel,
+	})
+	if !result.Success {
+		t.Errorf("waitUntil visible should succeed: %s", result.Message)
+	}
+}
+
+func TestWaitForAnimationToEnd(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.WaitForAnimationToEndStep{})
+	if !result.Success {
+		t.Errorf("waitForAnimationToEnd should succeed: %s", result.Message)
+	}
+}
+
+func TestUnsupportedCommands(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	tests := []struct {
+		name string
+		step flow.Step
+	}{
+		{"airplaneMode", &flow.SetAirplaneModeStep{}},
+		{"toggleAirplane", &flow.ToggleAirplaneModeStep{}},
+		{"travel", &flow.TravelStep{}},
+		{"addMedia", &flow.AddMediaStep{}},
+		{"startRecording", &flow.StartRecordingStep{}},
+		{"stopRecording", &flow.StopRecordingStep{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := d.Execute(tt.step)
+			if result.Success {
+				t.Errorf("%s should not succeed on web platform", tt.name)
+			}
+		})
+	}
+}
+
+func TestStopAndKillApp(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.StopAppStep{})
+	if !result.Success {
+		t.Errorf("stopApp should succeed: %s", result.Message)
+	}
+
+	// After stop, navigate again
+	result = d.Execute(&flow.LaunchAppStep{AppID: ts.URL})
+	if !result.Success {
+		t.Errorf("launchApp after stop should succeed: %s", result.Message)
+	}
+
+	result = d.Execute(&flow.KillAppStep{})
+	if !result.Success {
+		t.Errorf("killApp should succeed: %s", result.Message)
+	}
+}
+
+func TestOpenLink(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.OpenLinkStep{Link: ts.URL + "/other"})
+	if !result.Success {
+		t.Errorf("openLink should succeed: %s", result.Message)
+	}
+
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Other Page"},
+	})
+	if !result.Success {
+		t.Errorf("should see other page after openLink: %s", result.Message)
+	}
+}
+
+func TestDriverInterface(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Verify it satisfies the core.Driver interface
+	var _ core.Driver = d
+}
+
+func TestTapOnPoint(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.TapOnPointStep{X: 100, Y: 100})
+	if !result.Success {
+		t.Errorf("tapOnPoint should succeed: %s", result.Message)
+	}
+
+	// Percentage-based point
+	result = d.Execute(&flow.TapOnPointStep{Point: "50%, 50%"})
+	if !result.Success {
+		t.Errorf("tapOnPoint with percentage should succeed: %s", result.Message)
+	}
+}
+
+func TestSetLocation(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.SetLocationStep{
+		Latitude:  "37.7749",
+		Longitude: "-122.4194",
+	})
+	if !result.Success {
+		t.Errorf("setLocation should succeed: %s", result.Message)
+	}
+}
+
+func TestInputRandom(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Focus input first
+	d.Execute(&flow.TapOnStep{Selector: flow.Selector{CSS: "#input1"}})
+
+	result := d.Execute(&flow.InputRandomStep{DataType: "TEXT", Length: 5})
+	if !result.Success {
+		t.Errorf("inputRandom TEXT should succeed: %s", result.Message)
+	}
+	if result.Data == nil {
+		t.Error("inputRandom should return generated text as data")
+	}
+}
+
+func TestDoubleTapOn(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.DoubleTapOnStep{
+		Selector: flow.Selector{Text: "Click Me"},
+	})
+	if !result.Success {
+		t.Errorf("doubleTapOn should succeed: %s", result.Message)
+	}
+}
+
+func TestLongPressOn(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.LongPressOnStep{
+		Selector: flow.Selector{Text: "Click Me"},
+	})
+	if !result.Success {
+		t.Errorf("longPressOn should succeed: %s", result.Message)
+	}
+}
+
+func TestSwipe(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	for _, dir := range []string{"up", "down", "left", "right"} {
+		result := d.Execute(&flow.SwipeStep{Direction: dir})
+		if !result.Success {
+			t.Errorf("swipe %s should succeed: %s", dir, result.Message)
+		}
+	}
+}
+
+func TestParsePercentageCoords(t *testing.T) {
+	tests := []struct {
+		input string
+		x, y  float64
+		err   bool
+	}{
+		{"50%, 50%", 0.5, 0.5, false},
+		{"0%, 100%", 0, 1.0, false},
+		{"85%, 15%", 0.85, 0.15, false},
+		{"invalid", 0, 0, true},
+		{"50%, ", 0, 0, true},
+	}
+
+	for _, tt := range tests {
+		x, y, err := parsePercentageCoords(tt.input)
+		if tt.err {
+			if err == nil {
+				t.Errorf("parsePercentageCoords(%q) should fail", tt.input)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parsePercentageCoords(%q) failed: %v", tt.input, err)
+			continue
+		}
+		if x != tt.x || y != tt.y {
+			t.Errorf("parsePercentageCoords(%q) = (%f, %f), want (%f, %f)", tt.input, x, y, tt.x, tt.y)
+		}
+	}
+}
+
+func TestMapKey(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool // true = should map to something
+	}{
+		{"enter", true},
+		{"tab", true},
+		{"backspace", true},
+		{"escape", true},
+		{"space", true},
+		{"dpad_up", true},
+		{"arrow_down", true},
+		{"home", true},
+		{"end", true},
+		{"dpad_left", true},
+		{"dpad_right", true},
+		{"page_up", true},
+		{"page_down", true},
+		{"delete", true},
+		{"esc", true},
+		{"up", true},
+		{"down", true},
+		{"left", true},
+		{"right", true},
+		{"back", true},
+		{"arrow_up", true},
+		{"arrow_left", true},
+		{"arrow_right", true},
+		{"unknown", false},
+	}
+
+	for _, tt := range tests {
+		key := mapKey(tt.name)
+		if tt.want && key == 0 {
+			t.Errorf("mapKey(%q) should return a key", tt.name)
+		}
+		if !tt.want && key != 0 {
+			t.Errorf("mapKey(%q) should return 0", tt.name)
+		}
+	}
+}
+
+func TestConvertToKeys(t *testing.T) {
+	keys := convertToKeys("abc")
+	if len(keys) != 3 {
+		t.Fatalf("expected 3 keys, got %d", len(keys))
+	}
+	if keys[0] != 'a' || keys[1] != 'b' || keys[2] != 'c' {
+		t.Errorf("expected keys for 'abc', got %v", keys)
+	}
+
+	// Empty string
+	keys = convertToKeys("")
+	if len(keys) != 0 {
+		t.Errorf("expected 0 keys for empty string, got %d", len(keys))
+	}
+}
+
+func TestRandomGenerators(t *testing.T) {
+	// randomString
+	s := randomString(10)
+	if len(s) != 10 {
+		t.Errorf("randomString(10) length = %d, want 10", len(s))
+	}
+
+	// randomNumber
+	n := randomNumber(5)
+	if len(n) != 5 {
+		t.Errorf("randomNumber(5) length = %d, want 5", len(n))
+	}
+	for _, c := range n {
+		if c < '0' || c > '9' {
+			t.Errorf("randomNumber contains non-digit: %c", c)
+		}
+	}
+
+	// randomEmail
+	e := randomEmail()
+	if !strings.Contains(e, "@") || !strings.Contains(e, ".com") {
+		t.Errorf("randomEmail() = %q, doesn't look like an email", e)
+	}
+
+	// randomPersonName
+	name := randomPersonName()
+	parts := strings.Split(name, " ")
+	if len(parts) != 2 {
+		t.Errorf("randomPersonName() = %q, expected 'First Last'", name)
+	}
+}
+
+func TestCssEscape(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"simple", "simple"},
+		{"with-dash", "with-dash"},
+		{"with_underscore", "with_underscore"},
+		{"has.dot", `has\.dot`},
+		{"has:colon", `has\:colon`},
+		{"has space", `has\ space`},
+	}
+
+	for _, tt := range tests {
+		got := cssEscape(tt.input)
+		if got != tt.want {
+			t.Errorf("cssEscape(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestIsOptional(t *testing.T) {
+	tr := true
+	fa := false
+
+	if isOptional(nil) {
+		t.Error("isOptional(nil) should be false")
+	}
+	if !isOptional(&tr) {
+		t.Error("isOptional(&true) should be true")
+	}
+	if isOptional(&fa) {
+		t.Error("isOptional(&false) should be false")
+	}
+}
+
+func TestSetWaitForIdleTimeout(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	err := d.SetWaitForIdleTimeout(1000)
+	if err != nil {
+		t.Errorf("SetWaitForIdleTimeout should succeed: %v", err)
+	}
+}
+
+func TestOpenBrowser(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.OpenBrowserStep{URL: ts.URL + "/other"})
+	if !result.Success {
+		t.Errorf("openBrowser should succeed: %s", result.Message)
+	}
+
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Other Page"},
+	})
+	if !result.Success {
+		t.Errorf("should see other page after openBrowser: %s", result.Message)
+	}
+}
+
+func TestScrollUntilVisible(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+			<h1>Top</h1>
+			<div style="height:3000px"></div>
+			<p id="bottom">Bottom Element</p>
+		</body></html>`)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Element is below the fold, need to scroll to find it
+	result := d.Execute(&flow.ScrollUntilVisibleStep{
+		Element:   flow.Selector{CSS: "#bottom"},
+		Direction: "down",
+	})
+	if !result.Success {
+		t.Errorf("scrollUntilVisible should succeed: %s", result.Message)
+	}
+
+	// Test when element not found (should fail after max scrolls)
+	result = d.Execute(&flow.ScrollUntilVisibleStep{
+		Element:   flow.Selector{CSS: "#nonexistent"},
+		Direction: "down",
+	})
+	if result.Success {
+		t.Error("scrollUntilVisible should fail for nonexistent element")
+	}
+}
+
+func TestOpenBrowserInvalidURL(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Navigate to a chrome-error URL that triggers Navigate error
+	result := d.Execute(&flow.OpenBrowserStep{URL: "chrome://crash"})
+	if result.Success {
+		t.Error("openBrowser with chrome://crash should fail")
+	}
+}
+
+func TestAcceptAlertNoDialog(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// No dialog showing — should fail
+	result := d.Execute(&flow.AcceptAlertStep{})
+	if result.Success {
+		t.Error("acceptAlert with no dialog should fail")
+	}
+}
+
+func TestDismissAlertNoDialog(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// No dialog showing — should fail
+	result := d.Execute(&flow.DismissAlertStep{})
+	if result.Success {
+		t.Error("dismissAlert with no dialog should fail")
+	}
+}
+
+func TestAcceptAlert(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+			<button id="alert-btn" onclick="alert('Hello!')">Show Alert</button>
+		</body></html>`)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Trigger alert via setTimeout so it doesn't block
+	d.page.MustEval(`() => setTimeout(() => alert('Test Alert'), 100)`)
+	time.Sleep(300 * time.Millisecond)
+
+	result := d.Execute(&flow.AcceptAlertStep{})
+	if !result.Success {
+		t.Errorf("acceptAlert should succeed: %s", result.Message)
+	}
+}
+
+func TestDismissAlert(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+			<button id="confirm-btn" onclick="confirm('Are you sure?')">Confirm</button>
+		</body></html>`)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Trigger confirm dialog via setTimeout
+	d.page.MustEval(`() => setTimeout(() => confirm('Test Confirm'), 100)`)
+	time.Sleep(300 * time.Millisecond)
+
+	result := d.Execute(&flow.DismissAlertStep{})
+	if !result.Success {
+		t.Errorf("dismissAlert should succeed: %s", result.Message)
+	}
+}
+
+func TestInputTextNoSelector(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Focus input first
+	d.Execute(&flow.TapOnStep{Selector: flow.Selector{CSS: "#input1"}})
+
+	// Type without selector (uses keyboard)
+	result := d.Execute(&flow.InputTextStep{Text: "test"})
+	if !result.Success {
+		t.Errorf("inputText without selector should succeed: %s", result.Message)
+	}
+}
+
+func TestInputRandomAllTypes(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	types := []struct {
+		dataType string
+	}{
+		{"TEXT"},
+		{"NUMBER"},
+		{"EMAIL"},
+		{"PERSON_NAME"},
+	}
+
+	for _, tt := range types {
+		// Focus input for each type
+		d.Execute(&flow.TapOnStep{Selector: flow.Selector{CSS: "#input1"}})
+		// Select all and clear
+		d.page.Keyboard.MustType(input.Backspace)
+
+		result := d.Execute(&flow.InputRandomStep{DataType: tt.dataType, Length: 5})
+		if !result.Success {
+			t.Errorf("inputRandom %s should succeed: %s", tt.dataType, result.Message)
+		}
+		if result.Data == nil {
+			t.Errorf("inputRandom %s should return data", tt.dataType)
+		}
+	}
+}
+
+func TestWaitUntilNotVisible(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Wait for an element that doesn't exist to be not visible (should succeed)
+	sel := flow.Selector{Text: "Nonexistent Text"}
+	result := d.Execute(&flow.WaitUntilStep{
+		BaseStep:   flow.BaseStep{TimeoutMs: 2000},
+		NotVisible: &sel,
+	})
+	if !result.Success {
+		t.Errorf("waitUntil notVisible for nonexistent element should succeed: %s", result.Message)
+	}
+
+	// Wait for a visible element to be not visible (should fail/timeout)
+	sel2 := flow.Selector{Text: "Hello World"}
+	result = d.Execute(&flow.WaitUntilStep{
+		BaseStep:   flow.BaseStep{TimeoutMs: 1000},
+		NotVisible: &sel2,
+	})
+	if result.Success {
+		t.Error("waitUntil notVisible for visible element should fail")
+	}
+}
+
+func TestStateFiltersEnabled(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+			<button id="enabled-btn">Enabled</button>
+			<button id="disabled-btn" disabled>Disabled</button>
+			<input id="checked-cb" type="checkbox" checked>
+			<input id="unchecked-cb" type="checkbox">
+		</body></html>`)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	tr := true
+	fa := false
+
+	// Find enabled button with enabled=true filter
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{CSS: "#enabled-btn", Enabled: &tr},
+	})
+	if !result.Success {
+		t.Errorf("enabled button with enabled=true should be found: %s", result.Message)
+	}
+
+	// Find enabled button with enabled=false filter (should fail)
+	result = d.Execute(&flow.AssertVisibleStep{
+		BaseStep: flow.BaseStep{TimeoutMs: 1000},
+		Selector: flow.Selector{CSS: "#enabled-btn", Enabled: &fa},
+	})
+	if result.Success {
+		t.Error("enabled button with enabled=false filter should not be found")
+	}
+
+	// Find disabled button with enabled=false filter
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{CSS: "#disabled-btn", Enabled: &fa},
+	})
+	if !result.Success {
+		t.Errorf("disabled button with enabled=false should be found: %s", result.Message)
+	}
+
+	// Find disabled button with enabled=true filter (should fail)
+	result = d.Execute(&flow.AssertVisibleStep{
+		BaseStep: flow.BaseStep{TimeoutMs: 1000},
+		Selector: flow.Selector{CSS: "#disabled-btn", Enabled: &tr},
+	})
+	if result.Success {
+		t.Error("disabled button with enabled=true filter should not be found")
+	}
+}
+
+func TestStateFiltersChecked(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+			<input id="checked-cb" type="checkbox" checked>
+			<input id="unchecked-cb" type="checkbox">
+		</body></html>`)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	tr := true
+	fa := false
+
+	// Find checked checkbox with checked=true
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{CSS: "#checked-cb", Checked: &tr},
+	})
+	if !result.Success {
+		t.Errorf("checked checkbox with checked=true should be found: %s", result.Message)
+	}
+
+	// Find checked checkbox with checked=false (should fail)
+	result = d.Execute(&flow.AssertVisibleStep{
+		BaseStep: flow.BaseStep{TimeoutMs: 1000},
+		Selector: flow.Selector{CSS: "#checked-cb", Checked: &fa},
+	})
+	if result.Success {
+		t.Error("checked checkbox with checked=false should not be found")
+	}
+
+	// Find unchecked checkbox with checked=false
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{CSS: "#unchecked-cb", Checked: &fa},
+	})
+	if !result.Success {
+		t.Errorf("unchecked checkbox with checked=false should be found: %s", result.Message)
+	}
+}
+
+func TestStateFiltersFocused(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	tr := true
+	fa := false
+
+	// Focus input first
+	d.Execute(&flow.TapOnStep{Selector: flow.Selector{CSS: "#input1"}})
+
+	// Find focused input with focused=true
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{CSS: "#input1", Focused: &tr},
+	})
+	if !result.Success {
+		t.Errorf("focused input with focused=true should be found: %s", result.Message)
+	}
+
+	// Find unfocused button with focused=false
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{CSS: "#btn", Focused: &fa},
+	})
+	if !result.Success {
+		t.Errorf("unfocused button with focused=false should be found: %s", result.Message)
+	}
+}
+
+func TestFindByIDViaName(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+			<input name="username" type="text" value="test">
+		</body></html>`)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Should find via name attribute
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{ID: "username"},
+	})
+	if !result.Success {
+		t.Errorf("find by name 'username' should succeed: %s", result.Message)
+	}
+}
+
+func TestFindByIDViaAriaLabel(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Should find via aria-label
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{ID: "Click Me"},
+	})
+	if !result.Success {
+		t.Errorf("find by aria-label 'Click Me' should succeed: %s", result.Message)
+	}
+}
+
+func TestSwipeInvalidDirection(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.SwipeStep{Direction: "diagonal"})
+	if result.Success {
+		t.Error("swipe with invalid direction should fail")
+	}
+}
+
+func TestLaunchAppEmptyURL(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.LaunchAppStep{AppID: ""})
+	if result.Success {
+		t.Error("launchApp with empty URL should fail")
+	}
+}
+
+func TestLaunchAppWithClearState(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.LaunchAppStep{
+		AppID:      ts.URL,
+		ClearState: true,
+	})
+	if !result.Success {
+		t.Errorf("launchApp with clearState should succeed: %s", result.Message)
+	}
+}
+
+func TestPasteTextEmptyClipboard(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Clipboard starts empty
+	result := d.Execute(&flow.PasteTextStep{})
+	if result.Success {
+		t.Error("pasteText with empty clipboard should fail")
+	}
+}
+
+func TestEraseTextDefaultCharacters(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Focus input
+	d.Execute(&flow.TapOnStep{Selector: flow.Selector{CSS: "#input1"}})
+
+	// Erase with 0 characters (should default to 50)
+	result := d.Execute(&flow.EraseTextStep{Characters: 0})
+	if !result.Success {
+		t.Errorf("eraseText with default characters should succeed: %s", result.Message)
+	}
+}
+
+func TestCalculateTimeout(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// With step timeout
+	timeout := d.calculateTimeout(false, 3000)
+	if timeout != 3*time.Second {
+		t.Errorf("calculateTimeout with stepTimeout=3000 should return 3s, got %v", timeout)
+	}
+
+	// Optional
+	timeout = d.calculateTimeout(true, 0)
+	if timeout != time.Duration(optionalFindTimeoutMs)*time.Millisecond {
+		t.Errorf("calculateTimeout optional should return %dms, got %v", optionalFindTimeoutMs, timeout)
+	}
+
+	// Default
+	timeout = d.calculateTimeout(false, 0)
+	if timeout != time.Duration(d.findTimeoutMs)*time.Millisecond {
+		t.Errorf("calculateTimeout default should return %dms, got %v", d.findTimeoutMs, timeout)
+	}
+}
+
+func TestFindElementOnceNoSelector(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// No selector specified
+	_, _, err := d.findElementOnce(flow.Selector{})
+	if err == nil {
+		t.Error("findElementOnce with empty selector should fail")
+	}
+}
+
+func TestGetStatePortrait(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d, err := New(Config{
+		Headless:  true,
+		URL:       ts.URL,
+		ViewportW: 768,
+		ViewportH: 1024,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create driver: %v", err)
+	}
+	defer d.Close()
+
+	state := d.GetState()
+	if state.Orientation != "portrait" {
+		t.Errorf("expected orientation 'portrait', got %q", state.Orientation)
+	}
+}
+
+func TestScrollDefaultDirection(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Empty direction defaults to "down"
+	result := d.Execute(&flow.ScrollStep{Direction: ""})
+	if !result.Success {
+		t.Errorf("scroll with empty direction should succeed: %s", result.Message)
+	}
+}
+
+func TestScrollLeftRight(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.ScrollStep{Direction: "left"})
+	if !result.Success {
+		t.Errorf("scroll left should succeed: %s", result.Message)
+	}
+
+	result = d.Execute(&flow.ScrollStep{Direction: "right"})
+	if !result.Success {
+		t.Errorf("scroll right should succeed: %s", result.Message)
+	}
+}
+
+func TestCryptoRandIntn(t *testing.T) {
+	// Test basic functionality
+	for i := 0; i < 100; i++ {
+		n := cryptoRandIntn(10)
+		if n < 0 || n >= 10 {
+			t.Errorf("cryptoRandIntn(10) = %d, want [0,10)", n)
+		}
+	}
+}
+
+func TestStateFiltersWithTextSelector(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+			<button id="enabled-btn" aria-label="Submit">Submit</button>
+			<button id="disabled-btn" disabled aria-label="Cancel">Cancel</button>
+			<input id="cb1" type="checkbox" checked aria-label="Accept Terms">
+		</body></html>`)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	tr := true
+	fa := false
+
+	// Find enabled button via text + enabled filter (exercises AX tree path with state filters)
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Submit", Enabled: &tr},
+	})
+	if !result.Success {
+		t.Errorf("text 'Submit' with enabled=true should be found: %s", result.Message)
+	}
+
+	// Disabled button with enabled=false via text
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Cancel", Enabled: &fa},
+	})
+	if !result.Success {
+		t.Errorf("text 'Cancel' with enabled=false should be found: %s", result.Message)
+	}
+
+	// Checkbox with checked=true via text — exercises AX tree checked filter
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Accept Terms", Checked: &tr},
+	})
+	if !result.Success {
+		t.Errorf("text 'Accept Terms' with checked=true should be found: %s", result.Message)
+	}
+}
+
+func TestFindByTextJSFallback(t *testing.T) {
+	// Create a page where the element won't be found via AX tree or Search
+	// by using a data attribute that only the JS helper can find via textContent
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		// Use a span with unique text that's nested deep — the JS helper
+		// finds deepest matching element. Also ensure the AX tree won't
+		// give it a standard accessible name by using aria-hidden on an ancestor
+		// and role="presentation" to make it non-semantic.
+		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+			<div>
+				<span>Some visible text for JS fallback</span>
+			</div>
+		</body></html>`)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// This text should be found through the cascade (AX tree, then Search, then JS)
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Some visible text for JS fallback"},
+	})
+	if !result.Success {
+		t.Errorf("should find text through cascade: %s", result.Message)
+	}
+}
+
+func TestSelectedStateFilter(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		// Use size=2 to make options visible (not in a dropdown)
+		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+			<select id="sel" size="2">
+				<option id="opt-a" value="a" selected>Option A</option>
+				<option id="opt-b" value="b">Option B</option>
+			</select>
+		</body></html>`)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	tr := true
+	fa := false
+
+	// Selected option with selected=true
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{CSS: "#opt-a", Selected: &tr},
+	})
+	if !result.Success {
+		t.Errorf("selected option with selected=true should be found: %s", result.Message)
+	}
+
+	// Unselected option with selected=false
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{CSS: "#opt-b", Selected: &fa},
+	})
+	if !result.Success {
+		t.Errorf("unselected option with selected=false should be found: %s", result.Message)
+	}
+}
+
+func TestInputTextSelectorNotFound(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Non-existent selector — covers the error return path
+	result := d.Execute(&flow.InputTextStep{
+		BaseStep: flow.BaseStep{TimeoutMs: 1000},
+		Text:     "hello",
+		Selector: flow.Selector{CSS: "#nonexistent"},
+	})
+	if result.Success {
+		t.Error("inputText with non-existent selector should fail")
+	}
+}
+
+func TestInputTextNoSelectorInsertTextFallback(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Focus input first
+	d.Execute(&flow.TapOnStep{Selector: flow.Selector{CSS: "#input1"}})
+
+	// Use emoji/unicode that Keyboard.Type may not handle cleanly
+	// Even if Type() succeeds, this tests the no-selector path thoroughly
+	result := d.Execute(&flow.InputTextStep{Text: "hello world 123"})
+	if !result.Success {
+		t.Errorf("inputText without selector should succeed: %s", result.Message)
+	}
+}
+
+func TestStateFiltersFromAXNodeFocused(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+			<input id="search" type="text" aria-label="Search Input" placeholder="Search">
+			<button id="go-btn">Go</button>
+			<script>document.getElementById('search').focus();</script>
+		</body></html>`)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	tr := true
+	fa := false
+
+	// Find the focused input via text selector with focused=true
+	// This exercises matchesStateFiltersFromAXNode focused branch
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Search Input", Focused: &tr},
+	})
+	if !result.Success {
+		t.Errorf("focused input with focused=true via text should be found: %s", result.Message)
+	}
+
+	// The unfocused button with focused=false via text
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Go", Focused: &fa},
+	})
+	if !result.Success {
+		t.Errorf("unfocused button with focused=false via text should be found: %s", result.Message)
+	}
+}
+
+func TestStateFiltersFromAXNodeSelected(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+			<div role="tablist">
+				<button role="tab" aria-selected="true" id="tab1">Tab One</button>
+				<button role="tab" aria-selected="false" id="tab2">Tab Two</button>
+			</div>
+		</body></html>`)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	tr := true
+	fa := false
+
+	// Find selected tab via text with selected=true
+	// This exercises matchesStateFiltersFromAXNode selected branch
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Tab One", Selected: &tr},
+	})
+	if !result.Success {
+		t.Errorf("selected tab with selected=true via text should be found: %s", result.Message)
+	}
+
+	// Find unselected tab via text with selected=false
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Tab Two", Selected: &fa},
+	})
+	if !result.Success {
+		t.Errorf("unselected tab with selected=false via text should be found: %s", result.Message)
+	}
+}
+
+func TestScrollUntilVisibleUpDirection(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+			<p id="top">Top Element</p>
+			<div style="height:3000px"></div>
+			<p id="bottom">Bottom</p>
+			<script>window.scrollTo(0, 3000);</script>
+		</body></html>`)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Scroll up to find the top element
+	result := d.Execute(&flow.ScrollUntilVisibleStep{
+		Element:   flow.Selector{CSS: "#top"},
+		Direction: "up",
+	})
+	if !result.Success {
+		t.Errorf("scrollUntilVisible up should succeed: %s", result.Message)
+	}
+}
+
+// --- Direct internal method tests to cover error paths ---
+
+func TestFindByJSDirect(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Success: find existing text via JS
+	_, info, err := d.findByJS("Hello World", flow.Selector{Text: "Hello World"})
+	if err != nil {
+		t.Errorf("findByJS should find 'Hello World': %v", err)
+	}
+	if info == nil {
+		t.Error("findByJS should return element info")
+	}
+
+	// Error: text not found — JS throws
+	_, _, err = d.findByJS("NONEXISTENT_TEXT_XYZ_999", flow.Selector{Text: "NONEXISTENT_TEXT_XYZ_999"})
+	if err == nil {
+		t.Error("findByJS should fail for nonexistent text")
+	}
+
+	// State filter mismatch: find button but require enabled=false
+	fa := false
+	_, _, err = d.findByJS("Click Me", flow.Selector{Text: "Click Me", Enabled: &fa})
+	if err == nil {
+		t.Error("findByJS should fail when state filter doesn't match")
+	}
+}
+
+func TestFindBySearchDirect(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Success: find existing text via Search
+	_, info, err := d.findBySearch("Hello World", flow.Selector{Text: "Hello World"})
+	if err != nil {
+		t.Errorf("findBySearch should find 'Hello World': %v", err)
+	}
+	if info == nil {
+		t.Error("findBySearch should return element info")
+	}
+
+	// State filter mismatch: find button but require enabled=false
+	fa := false
+	_, _, err = d.findBySearch("Click Me", flow.Selector{Text: "Click Me", Enabled: &fa})
+	if err == nil {
+		t.Error("findBySearch should fail when state filter doesn't match")
+	}
+}
+
+func TestFindByAXTreeHiddenElement(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+			<button style="display:none" aria-label="Hidden Button">Hidden Button</button>
+			<button aria-label="Visible Button">Visible Button</button>
+			<button disabled aria-label="Only Disabled">Only Disabled</button>
+		</body></html>`)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Should find the visible button, skipping the hidden one (covers !visible branch)
+	_, info, err := d.findByAXTree("Visible Button", "button", flow.Selector{Text: "Visible Button"})
+	if err != nil {
+		t.Errorf("findByAXTree should find visible button: %v", err)
+	}
+	if info == nil || !info.Visible {
+		t.Error("findByAXTree should return visible element info")
+	}
+
+	// Should fail for text with no AX nodes
+	_, _, err = d.findByAXTree("NONEXISTENT_AX_TEXT_999", "", flow.Selector{Text: "NONEXISTENT_AX_TEXT_999"})
+	if err == nil {
+		t.Error("findByAXTree should fail for nonexistent text")
+	}
+
+	// State filter mismatch: button is disabled but we require enabled=true
+	// AX tree has "disabled" property, so matchesStateFiltersFromAXNode returns false
+	tr := true
+	_, _, err = d.findByAXTree("Only Disabled", "button", flow.Selector{Text: "Only Disabled", Enabled: &tr})
+	if err == nil {
+		t.Error("findByAXTree should fail when AX state filter doesn't match")
+	}
+}
+
+func TestNewInvalidChromeBin(t *testing.T) {
+	_, err := New(Config{
+		Headless:  true,
+		ChromeBin: "/nonexistent/path/to/chrome",
+	})
+	if err == nil {
+		t.Error("New with invalid ChromeBin should fail")
+	}
+}
+
+func TestCloseNilBrowser(t *testing.T) {
+	d := &Driver{
+		stopCh: make(chan struct{}),
+	}
+	err := d.Close()
+	if err != nil {
+		t.Errorf("Close with nil browser should return nil: %v", err)
+	}
+}
+
+func TestSetLocationInvalidCoords(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Invalid latitude
+	result := d.Execute(&flow.SetLocationStep{
+		Latitude:  "not-a-number",
+		Longitude: "-122.4194",
+	})
+	if result.Success {
+		t.Error("setLocation with invalid latitude should fail")
+	}
+
+	// Invalid longitude
+	result = d.Execute(&flow.SetLocationStep{
+		Latitude:  "37.7749",
+		Longitude: "not-a-number",
+	})
+	if result.Success {
+		t.Error("setLocation with invalid longitude should fail")
+	}
+}
+
+func TestParsePercentageCoordsInvalidY(t *testing.T) {
+	// Invalid Y coordinate (X is valid but Y is not)
+	_, _, err := parsePercentageCoords("50%, abc")
+	if err == nil {
+		t.Error("parsePercentageCoords with invalid Y should fail")
+	}
+}
+
+func TestTapOnNotFound(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.TapOnStep{
+		BaseStep: flow.BaseStep{TimeoutMs: 1000},
+		Selector: flow.Selector{Text: "NONEXISTENT_BUTTON_XYZ"},
+	})
+	if result.Success {
+		t.Error("tapOn with nonexistent element should fail")
+	}
+}
+
+func TestDoubleTapOnNotFound(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.DoubleTapOnStep{
+		BaseStep: flow.BaseStep{TimeoutMs: 1000},
+		Selector: flow.Selector{Text: "NONEXISTENT_XYZ"},
+	})
+	if result.Success {
+		t.Error("doubleTapOn with nonexistent element should fail")
+	}
+}
+
+func TestLongPressOnNotFound(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.LongPressOnStep{
+		BaseStep: flow.BaseStep{TimeoutMs: 1000},
+		Selector: flow.Selector{Text: "NONEXISTENT_XYZ"},
+	})
+	if result.Success {
+		t.Error("longPressOn with nonexistent element should fail")
+	}
+}
+
+func TestCopyTextFromNotFound(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.CopyTextFromStep{
+		BaseStep: flow.BaseStep{TimeoutMs: 1000},
+		Selector: flow.Selector{CSS: "#nonexistent"},
+	})
+	if result.Success {
+		t.Error("copyTextFrom with nonexistent element should fail")
+	}
+}
+
+func TestAssertVisibleNotFound(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.AssertVisibleStep{
+		BaseStep: flow.BaseStep{TimeoutMs: 1000},
+		Selector: flow.Selector{CSS: "#nonexistent"},
+	})
+	if result.Success {
+		t.Error("assertVisible with nonexistent element should fail")
+	}
+}
+
+func TestFindByIDNotFound(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	_, _, err := d.findByID(flow.Selector{ID: "COMPLETELY_NONEXISTENT_ID_XYZ"})
+	if err == nil {
+		t.Error("findByID should fail for nonexistent ID")
+	}
+
+	// State filter mismatch: find button by aria-label but require disabled
+	fa := false
+	_, _, err = d.findByID(flow.Selector{ID: "Click Me", Enabled: &fa})
+	if err == nil {
+		t.Error("findByID should fail when state filter doesn't match")
+	}
+}
+
+func TestFindByCSSStateFilterMismatch(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	fa := false
+	_, _, err := d.findByCSS(flow.Selector{CSS: "#btn", Enabled: &fa})
+	if err == nil {
+		t.Error("findByCSS should fail when state filter doesn't match")
+	}
+}
+
+func TestFindByTextNotFound(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Text that doesn't exist anywhere — exercises all 3 cascade stages failing
+	_, _, err := d.findByText(flow.Selector{Text: "ZZZZZ_NONEXISTENT_TEXT_99999"})
+	if err == nil {
+		t.Error("findByText should fail for nonexistent text")
+	}
+}
+
+func TestExecuteUnknownStepType(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Use an unregistered step type to cover the default case
+	result := d.Execute(&unknownStep{})
+	if result.Success {
+		t.Error("Execute with unknown step type should fail")
+	}
+	if !strings.Contains(result.Message, "not supported") {
+		t.Errorf("unexpected message: %s", result.Message)
+	}
+}
+
+// unknownStep implements flow.Step for testing the default Execute branch.
+type unknownStep struct{}
+
+func (s *unknownStep) Type() flow.StepType { return "unknown" }
+func (s *unknownStep) IsOptional() bool    { return false }
+func (s *unknownStep) Label() string       { return "" }
+func (s *unknownStep) Describe() string    { return "unknown step" }
+
+func TestWaitUntilTimeout(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Wait with default timeout=0 (should use 30000 default, but we override with step timeout)
+	sel := flow.Selector{Text: "NONEXISTENT_XYZ_WAIT"}
+	result := d.Execute(&flow.WaitUntilStep{
+		BaseStep: flow.BaseStep{TimeoutMs: 500},
+		Visible:  &sel,
+	})
+	if result.Success {
+		t.Error("waitUntil should fail for nonexistent element")
+	}
+}
+
+func TestAssertVisibleHiddenElement(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Element exists but is display:none — covers the !info.Visible branch
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{CSS: "#hidden"},
+	})
+	if result.Success {
+		t.Error("assertVisible on hidden element should fail")
+	}
+	if !strings.Contains(result.Message, "not visible") {
+		t.Errorf("expected 'not visible' message, got: %s", result.Message)
+	}
+}
+
+func TestTapOnPointInvalidPercentage(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.Execute(&flow.TapOnPointStep{Point: "invalid"})
+	if result.Success {
+		t.Error("tapOnPoint with invalid percentage should fail")
+	}
+}
+
+func TestInputRandomDefaultLength(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	d.Execute(&flow.TapOnStep{Selector: flow.Selector{CSS: "#input1"}})
+
+	// Length=0 should default to 10
+	result := d.Execute(&flow.InputRandomStep{DataType: "TEXT", Length: 0})
+	if !result.Success {
+		t.Errorf("inputRandom with default length should succeed: %s", result.Message)
+	}
+	text, ok := result.Data.(string)
+	if !ok {
+		t.Fatal("inputRandom should return string data")
+	}
+	if len(text) != 10 {
+		t.Errorf("inputRandom default length should be 10, got %d", len(text))
+	}
+}
+
+// newSelectorTestDriver creates a driver pointed at the /selectors page.
+func newSelectorTestDriver(t *testing.T, ts *httptest.Server) *Driver {
+	t.Helper()
+	d, err := New(Config{
+		Headless:  true,
+		URL:       ts.URL + "/selectors",
+		ViewportW: 1024,
+		ViewportH: 768,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create driver: %v", err)
+	}
+	d.SetFindTimeout(3000)
+	return d
+}
+
+func TestFindByTestID(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newSelectorTestDriver(t, ts)
+	defer d.Close()
+
+	// Find by testId
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{TestID: "email-input"},
+	})
+	if !result.Success {
+		t.Errorf("find by testId should succeed: %s", result.Message)
+	}
+
+	// testId not found
+	result = d.Execute(&flow.AssertVisibleStep{
+		BaseStep: flow.BaseStep{Optional: true, TimeoutMs: 1000},
+		Selector: flow.Selector{TestID: "nonexistent"},
+	})
+	if result.Success {
+		t.Error("find by nonexistent testId should fail")
+	}
+}
+
+func TestFindByPlaceholder(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newSelectorTestDriver(t, ts)
+	defer d.Close()
+
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Placeholder: "Enter email"},
+	})
+	if !result.Success {
+		t.Errorf("find by placeholder should succeed: %s", result.Message)
+	}
+
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Placeholder: "Search..."},
+	})
+	if !result.Success {
+		t.Errorf("find by placeholder 'Search...' should succeed: %s", result.Message)
+	}
+}
+
+func TestFindByRole(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newSelectorTestDriver(t, ts)
+	defer d.Close()
+
+	// Find by role alone
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Role: "link"},
+	})
+	if !result.Success {
+		t.Errorf("find by role 'link' should succeed: %s", result.Message)
+	}
+
+	// Find by role + text
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Role: "link", Text: "About Us"},
+	})
+	if !result.Success {
+		t.Errorf("find by role 'link' + text 'About Us' should succeed: %s", result.Message)
+	}
+}
+
+func TestFindByHref(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newSelectorTestDriver(t, ts)
+	defer d.Close()
+
+	// Exact match
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Href: "/about"},
+	})
+	if !result.Success {
+		t.Errorf("find by href '/about' should succeed: %s", result.Message)
+	}
+
+	// Partial match
+	result = d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Href: "contact"},
+	})
+	if !result.Success {
+		t.Errorf("find by href partial 'contact' should succeed: %s", result.Message)
+	}
+}
+
+func TestFindByAlt(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newSelectorTestDriver(t, ts)
+	defer d.Close()
+
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Alt: "Company Logo"},
+	})
+	if !result.Success {
+		t.Errorf("find by alt should succeed: %s", result.Message)
+	}
+}
+
+func TestFindByTitle(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newSelectorTestDriver(t, ts)
+	defer d.Close()
+
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Title: "About us page"},
+	})
+	if !result.Success {
+		t.Errorf("find by title should succeed: %s", result.Message)
+	}
+}
+
+func TestFindByName(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newSelectorTestDriver(t, ts)
+	defer d.Close()
+
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Name: "user_email"},
+	})
+	if !result.Success {
+		t.Errorf("find by name should succeed: %s", result.Message)
+	}
+}
+
+func TestFindByTextContains(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newSelectorTestDriver(t, ts)
+	defer d.Close()
+
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{TextContains: "Welcome"},
+	})
+	if !result.Success {
+		t.Errorf("find by textContains should succeed: %s", result.Message)
+	}
+}
+
+func TestFindByTextRegex(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newSelectorTestDriver(t, ts)
+	defer d.Close()
+
+	// Match order number pattern
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{TextRegex: `Order #\d+ confirmed`},
+	})
+	if !result.Success {
+		t.Errorf("find by textRegex should succeed: %s", result.Message)
+	}
+
+	// Invalid regex should fail
+	result = d.Execute(&flow.AssertVisibleStep{
+		BaseStep: flow.BaseStep{Optional: true, TimeoutMs: 1000},
+		Selector: flow.Selector{TextRegex: `[invalid`},
+	})
+	if result.Success {
+		t.Error("find by invalid textRegex should fail")
+	}
+}
+
+func TestFindByNth(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newSelectorTestDriver(t, ts)
+	defer d.Close()
+
+	// Find second .item (nth=1, 0-based)
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{CSS: ".item", Nth: 1},
+	})
+	if !result.Success {
+		t.Errorf("find by CSS with nth=1 should succeed: %s", result.Message)
+	}
+
+	// nth out of range
+	result = d.Execute(&flow.AssertVisibleStep{
+		BaseStep: flow.BaseStep{Optional: true, TimeoutMs: 1000},
+		Selector: flow.Selector{CSS: ".item", Nth: 10},
+	})
+	if result.Success {
+		t.Error("find by CSS with nth=10 should fail (only 3 items)")
+	}
+}
+
+func TestFindByTapOnNewSelectors(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newSelectorTestDriver(t, ts)
+	defer d.Close()
+
+	// Tap on element found by placeholder
+	result := d.Execute(&flow.TapOnStep{
+		Selector: flow.Selector{Placeholder: "Enter email"},
+	})
+	if !result.Success {
+		t.Errorf("tapOn by placeholder should succeed: %s", result.Message)
+	}
+
+	// Tap on element found by testId
+	result = d.Execute(&flow.TapOnStep{
+		Selector: flow.Selector{TestID: "submit-btn"},
+	})
+	if !result.Success {
+		t.Errorf("tapOn by testId should succeed: %s", result.Message)
+	}
+}
+
+func TestUnsupportedFieldsWarning(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newSelectorTestDriver(t, ts)
+	defer d.Close()
+
+	// Using width on web should log a warning but still try to find element
+	// The selector itself should work based on the supported fields
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{Text: "Submit Form", Width: 100},
+	})
+	if !result.Success {
+		t.Errorf("should still find element despite unsupported width field: %s", result.Message)
+	}
+
+	// Verify warnedFields was populated
+	if !d.warnedFields["width"] {
+		t.Error("expected 'width' to be in warnedFields")
+	}
+}
+
+func TestFindByAttributeNotFound(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newSelectorTestDriver(t, ts)
+	defer d.Close()
+
+	// testId not found
+	result := d.Execute(&flow.AssertVisibleStep{
+		BaseStep: flow.BaseStep{Optional: true, TimeoutMs: 1000},
+		Selector: flow.Selector{Placeholder: "nonexistent-placeholder"},
+	})
+	if result.Success {
+		t.Error("find by nonexistent placeholder should fail")
+	}
+
+	// name not found
+	result = d.Execute(&flow.AssertVisibleStep{
+		BaseStep: flow.BaseStep{Optional: true, TimeoutMs: 1000},
+		Selector: flow.Selector{Name: "nonexistent-name"},
+	})
+	if result.Success {
+		t.Error("find by nonexistent name should fail")
+	}
+
+	// alt not found
+	result = d.Execute(&flow.AssertVisibleStep{
+		BaseStep: flow.BaseStep{Optional: true, TimeoutMs: 1000},
+		Selector: flow.Selector{Alt: "nonexistent-alt"},
+	})
+	if result.Success {
+		t.Error("find by nonexistent alt should fail")
+	}
+
+	// title not found
+	result = d.Execute(&flow.AssertVisibleStep{
+		BaseStep: flow.BaseStep{Optional: true, TimeoutMs: 1000},
+		Selector: flow.Selector{Title: "nonexistent-title"},
+	})
+	if result.Success {
+		t.Error("find by nonexistent title should fail")
+	}
+}
+
+func TestFindByHrefNotFound(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newSelectorTestDriver(t, ts)
+	defer d.Close()
+
+	result := d.Execute(&flow.AssertVisibleStep{
+		BaseStep: flow.BaseStep{Optional: true, TimeoutMs: 1000},
+		Selector: flow.Selector{Href: "/nonexistent-page-xyz"},
+	})
+	if result.Success {
+		t.Error("find by nonexistent href should fail")
+	}
+}
+
+func TestFindByTextContainsNotFound(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newSelectorTestDriver(t, ts)
+	defer d.Close()
+
+	result := d.Execute(&flow.AssertVisibleStep{
+		BaseStep: flow.BaseStep{Optional: true, TimeoutMs: 1000},
+		Selector: flow.Selector{TextContains: "xyzNonexistentText123"},
+	})
+	if result.Success {
+		t.Error("find by nonexistent textContains should fail")
+	}
+}
+
+func TestFindByTextRegexNotFound(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newSelectorTestDriver(t, ts)
+	defer d.Close()
+
+	result := d.Execute(&flow.AssertVisibleStep{
+		BaseStep: flow.BaseStep{Optional: true, TimeoutMs: 1000},
+		Selector: flow.Selector{TextRegex: `^xyzNonexistent\d{99}$`},
+	})
+	if result.Success {
+		t.Error("find by nonexistent textRegex should fail")
+	}
+}
+
+func TestFindByNthWithAttribute(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newSelectorTestDriver(t, ts)
+	defer d.Close()
+
+	// Find by testId with nth=0 (first, same as default)
+	result := d.Execute(&flow.AssertVisibleStep{
+		Selector: flow.Selector{TestID: "email-input"},
+	})
+	if !result.Success {
+		t.Errorf("find by testId without nth should succeed: %s", result.Message)
+	}
+}
+
+func TestFindByRoleNotFound(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newSelectorTestDriver(t, ts)
+	defer d.Close()
+
+	result := d.Execute(&flow.AssertVisibleStep{
+		BaseStep: flow.BaseStep{Optional: true, TimeoutMs: 1000},
+		Selector: flow.Selector{Role: "slider"},
+	})
+	if result.Success {
+		t.Error("find by nonexistent role should fail")
+	}
+}

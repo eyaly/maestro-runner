@@ -4,6 +4,7 @@ package uiautomator2
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -71,14 +72,18 @@ type Driver struct {
 
 	// Keyboard auto-dismiss: set after inputText/inputRandom, checked on next tap/assert
 	lastStepWasInput bool
+
+	// Selector validation dedup
+	warnedFields map[string]bool
 }
 
 // New creates a new UIAutomator2 driver.
 func New(client UIA2Client, info *core.PlatformInfo, device ShellExecutor) *Driver {
 	return &Driver{
-		client: client,
-		info:   info,
-		device: device,
+		client:       client,
+		info:         info,
+		device:       device,
+		warnedFields: make(map[string]bool),
 	}
 }
 
@@ -269,7 +274,20 @@ func (d *Driver) GetPlatformInfo() *core.PlatformInfo {
 // If stepTimeoutMs > 0, uses that; otherwise uses 17s for required, 7s for optional.
 // Returns full element info including text and bounds (3 HTTP calls).
 func (d *Driver) findElement(sel flow.Selector, optional bool, stepTimeoutMs int) (*uiautomator2.Element, *core.ElementInfo, error) {
+	d.warnUnsupportedFields(sel)
 	return d.findElementWithOptions(sel, optional, stepTimeoutMs, false, false)
+}
+
+// warnUnsupportedFields logs a warning for each unsupported selector field (once per field).
+func (d *Driver) warnUnsupportedFields(sel flow.Selector) {
+	if unsupported := flow.CheckUnsupportedFields(&sel, "android"); len(unsupported) > 0 {
+		for _, field := range unsupported {
+			if !d.warnedFields[field] {
+				d.warnedFields[field] = true
+				log.Printf("[uiautomator2] warning: %q is not supported on android — will be ignored", field)
+			}
+		}
+	}
 }
 
 // findElementFast finds an element with minimal HTTP calls (1 call).
