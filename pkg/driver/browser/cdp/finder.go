@@ -156,6 +156,14 @@ func (d *Driver) findByID(sel flow.Selector) (*rod.Element, *core.ElementInfo, e
 func (d *Driver) findByText(sel flow.Selector) (*rod.Element, *core.ElementInfo, error) {
 	text := sel.Text
 
+	// If text looks like a regex pattern, delegate to regex matching
+	if looksLikeRegex(text) {
+		regexSel := sel
+		regexSel.TextRegex = text
+		regexSel.Text = ""
+		return d.findByTextRegex(regexSel)
+	}
+
 	// Stage 1a: AX tree — clickable roles
 	clickableRoles := []string{"button", "link", "menuitem", "tab", "checkbox", "radio"}
 	for _, role := range clickableRoles {
@@ -684,4 +692,35 @@ func cssEscape(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// looksLikeRegex returns true if the text contains regex metacharacters.
+// Matches the behavior of the mobile drivers.
+func looksLikeRegex(text string) bool {
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if i > 0 && text[i-1] == '\\' {
+			continue
+		}
+		switch c {
+		case '.':
+			if i+1 < len(text) {
+				next := text[i+1]
+				if next == '*' || next == '+' || next == '?' {
+					return true
+				}
+			}
+		case '*', '+', '?', '[', ']', '{', '}', '|', '(', ')':
+			return true
+		case '^':
+			if i == 0 {
+				return true
+			}
+		case '$':
+			if i == len(text)-1 {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -116,8 +116,13 @@ Examples:
 
 		// Web options
 		&cli.BoolFlag{
-			Name:  "headless",
-			Usage: "Run in headless mode (web only)",
+			Name:  "headed",
+			Usage: "Show browser window (web only, default is headless)",
+		},
+		&cli.StringFlag{
+			Name:    "browser",
+			Usage:   "Browser to use: chrome, chromium, or path to binary (web only)",
+			EnvVars: []string{"MAESTRO_BROWSER"},
 		},
 
 		// Driver settings
@@ -432,7 +437,8 @@ type RunConfig struct {
 
 	// Execution
 	Continuous bool
-	Headless   bool
+	Headed  bool   // Show browser window (web only, default is headless)
+	Browser string // chrome, chromium, or path to binary (web only)
 
 	// Device
 	Platform string
@@ -610,7 +616,8 @@ func runTest(c *cli.Context) error {
 		OutputDir:          outputDir,
 		Parallel:           getInt("parallel"),
 		Continuous:         getBool("continuous"),
-		Headless:           getBool("headless"),
+		Headed:             getBool("headed"),
+		Browser:            getString("browser"),
 		Platform:           getString("platform"),
 		Devices:            parseDevices(getString("device")),
 		Verbose:            getBool("verbose"),
@@ -765,9 +772,9 @@ func executeTest(cfg *RunConfig) error {
 		}
 	}
 
-	// Extract appId from first flow if not in config
-	if cfg.AppID == "" && len(flows) > 0 && flows[0].Config.AppID != "" {
-		cfg.AppID = flows[0].Config.AppID
+	// Extract appId/url from first flow if not in config
+	if cfg.AppID == "" && len(flows) > 0 {
+		cfg.AppID = flows[0].Config.EffectiveAppID()
 	}
 
 	// 3.5. Handle device startup (emulator or simulator, if requested)

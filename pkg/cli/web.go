@@ -11,12 +11,14 @@ import (
 // CreateWebDriver creates a browser driver using Rod + CDP.
 // Exported for library use.
 func CreateWebDriver(cfg *RunConfig) (core.Driver, func(), error) {
+	headless := !cfg.Headed
 	printSetupStep("Launching browser...")
-	logger.Info("Creating web driver (headless=%v)", cfg.Headless)
+	logger.Info("Creating web driver (headless=%v)", headless)
 
 	driver, err := cdpdriver.New(cdpdriver.Config{
-		Headless: cfg.Headless,
+		Headless: headless,
 		URL:      cfg.AppID,
+		Browser:  cfg.Browser,
 	})
 	if err != nil {
 		logger.Error("Failed to launch browser: %v", err)
@@ -25,7 +27,9 @@ func CreateWebDriver(cfg *RunConfig) (core.Driver, func(), error) {
 
 	printSetupSuccess("Browser launched")
 	cleanup := func() {
-		driver.Close()
+		if err := driver.Close(); err != nil {
+			logger.Debug("failed to close browser driver during cleanup: %v", err)
+		}
 	}
 	return driver, cleanup, nil
 }

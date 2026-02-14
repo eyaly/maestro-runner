@@ -52,6 +52,15 @@ func (f *Flow) GetTestCases() []*RunFlowStep {
 	return testCases
 }
 
+// EffectiveAppID returns AppID if set, otherwise falls back to URL.
+// For web flows, the URL field serves as the app identifier (navigation target).
+func (c Config) EffectiveAppID() string {
+	if c.AppID != "" {
+		return c.AppID
+	}
+	return c.URL
+}
+
 // Config represents flow-level configuration.
 type Config struct {
 	AppID              string            `yaml:"appId"`

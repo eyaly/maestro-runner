@@ -70,7 +70,9 @@ func (fr *FlowRunner) Run() FlowResult {
 	if fr.flow.Config.AppID != "" {
 		expanded := fr.script.ExpandVariables(fr.flow.Config.AppID)
 		fr.flow.Config.AppID = expanded
-		fr.script.SetVariable("APP_ID", expanded)
+	}
+	if appID := fr.flow.Config.EffectiveAppID(); appID != "" {
+		fr.script.SetVariable("APP_ID", appID)
 	}
 	fr.script.SetVariables(fr.flow.Config.Env)
 
@@ -288,25 +290,25 @@ func (fr *FlowRunner) executeStep(idx int, step flow.Step) (report.Status, strin
 		fr.subCommands = nil
 		result = fr.executeRunFlow(s)
 
-	// App lifecycle steps - inject flow's appId if not specified
+	// App lifecycle steps - inject flow's appId/url if not specified
 	case *flow.LaunchAppStep:
-		if s.AppID == "" && fr.flow.Config.AppID != "" {
-			s.AppID = fr.flow.Config.AppID
+		if s.AppID == "" {
+			s.AppID = fr.flow.Config.EffectiveAppID()
 		}
 		result = fr.driver.Execute(step)
 	case *flow.StopAppStep:
-		if s.AppID == "" && fr.flow.Config.AppID != "" {
-			s.AppID = fr.flow.Config.AppID
+		if s.AppID == "" {
+			s.AppID = fr.flow.Config.EffectiveAppID()
 		}
 		result = fr.driver.Execute(step)
 	case *flow.KillAppStep:
-		if s.AppID == "" && fr.flow.Config.AppID != "" {
-			s.AppID = fr.flow.Config.AppID
+		if s.AppID == "" {
+			s.AppID = fr.flow.Config.EffectiveAppID()
 		}
 		result = fr.driver.Execute(step)
 	case *flow.ClearStateStep:
-		if s.AppID == "" && fr.flow.Config.AppID != "" {
-			s.AppID = fr.flow.Config.AppID
+		if s.AppID == "" {
+			s.AppID = fr.flow.Config.EffectiveAppID()
 		}
 		result = fr.driver.Execute(step)
 
@@ -734,23 +736,23 @@ func (fr *FlowRunner) executeSubFlow(subFlow flow.Flow) *core.CommandResult {
 			}
 		}
 
-		// Inject subflow's appId into app lifecycle steps (same as executeStep does for main flow)
+		// Inject subflow's appId/url into app lifecycle steps (same as executeStep does for main flow)
 		switch s := step.(type) {
 		case *flow.LaunchAppStep:
-			if s.AppID == "" && subFlow.Config.AppID != "" {
-				s.AppID = subFlow.Config.AppID
+			if s.AppID == "" {
+				s.AppID = subFlow.Config.EffectiveAppID()
 			}
 		case *flow.StopAppStep:
-			if s.AppID == "" && subFlow.Config.AppID != "" {
-				s.AppID = subFlow.Config.AppID
+			if s.AppID == "" {
+				s.AppID = subFlow.Config.EffectiveAppID()
 			}
 		case *flow.KillAppStep:
-			if s.AppID == "" && subFlow.Config.AppID != "" {
-				s.AppID = subFlow.Config.AppID
+			if s.AppID == "" {
+				s.AppID = subFlow.Config.EffectiveAppID()
 			}
 		case *flow.ClearStateStep:
-			if s.AppID == "" && subFlow.Config.AppID != "" {
-				s.AppID = subFlow.Config.AppID
+			if s.AppID == "" {
+				s.AppID = subFlow.Config.EffectiveAppID()
 			}
 		}
 

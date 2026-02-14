@@ -1960,6 +1960,34 @@ func TestCloseNilBrowser(t *testing.T) {
 	}
 }
 
+func TestCloseIdempotent(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+
+	// First close should succeed
+	if err := d.Close(); err != nil {
+		t.Fatalf("first Close failed: %v", err)
+	}
+	// Second close should not panic and return the same result
+	if err := d.Close(); err != nil {
+		t.Fatalf("second Close failed: %v", err)
+	}
+}
+
+func TestCloseNilBrowserIdempotent(t *testing.T) {
+	d := &Driver{
+		stopCh: make(chan struct{}),
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("first Close with nil browser failed: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("second Close with nil browser failed: %v", err)
+	}
+}
+
 func TestSetLocationInvalidCoords(t *testing.T) {
 	ts := newTestServer()
 	defer ts.Close()

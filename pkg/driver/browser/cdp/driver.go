@@ -3,6 +3,12 @@ package cdp
 import (
 	"encoding/json"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
@@ -24,6 +30,7 @@ type Config struct {
 	Headless  bool
 	URL       string // Initial URL to navigate to
 	ChromeBin string // Path to Chrome binary (empty = auto-download)
+	Browser   string // "chrome", "chromium", or path to binary (default: chromium)
 	ViewportW int
 	ViewportH int
 }
@@ -45,6 +52,9 @@ type Driver struct {
 
 	// Selector validation dedup
 	warnedFields map[string]bool
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // New creates a new browser Driver.
@@ -56,11 +66,40 @@ func New(cfg Config) (*Driver, error) {
 		cfg.ViewportH = defaultViewportH
 	}
 
-	// Launch Chrome
-	l := launcher.New().Headless(cfg.Headless)
-	if cfg.ChromeBin != "" {
-		l = l.Bin(cfg.ChromeBin)
+	// Cache downloaded browsers in ~/.maestro-runner/browsers/
+	homeDir, _ := os.UserHomeDir()
+	if homeDir != "" {
+		launcher.DefaultBrowserDir = filepath.Join(homeDir, ".maestro-runner", "browsers")
 	}
+
+	// Resolve which browser binary to use.
+	// Priority: ChromeBin (direct path) > Browser flag > default (chromium/download)
+	chromeBin := resolveBrowserBin(cfg)
+
+	// Use a clean profile with password manager disabled
+	l := launcher.New().Headless(cfg.Headless).
+		Set("no-first-run").
+		Set("disable-default-apps").
+		Set("disable-popup-blocking").
+		Set("disable-translate").
+		Set("disable-background-timer-throttling").
+		Set("disable-component-update").
+		Set("password-store", "basic")
+	if chromeBin != "" {
+		l = l.Bin(chromeBin)
+	} else {
+		// Using Rod's bundled Chromium — check if download is needed
+		browserDir := launcher.DefaultBrowserDir
+		if needsDownload(browserDir) {
+			log.Printf("[browser] Downloading Chromium (first time only, subsequent runs will be faster)...")
+		}
+	}
+
+	// Write Chrome preferences to disable password manager and breach detection
+	if dataDir := l.Get("user-data-dir"); dataDir != "" {
+		writeChromePref(dataDir)
+	}
+
 	controlURL, err := l.Launch()
 	if err != nil {
 		return nil, fmt.Errorf("failed to launch browser: %w", err)
@@ -137,13 +176,103 @@ func (d *Driver) startDialogHandler() {
 	})()
 }
 
-// Close shuts down the browser.
-func (d *Driver) Close() error {
-	close(d.stopCh)
-	if d.browser != nil {
-		return d.browser.Close()
+// writeChromePref writes a Chrome Preferences file that disables password manager
+// and breach detection popups. Must be called before Launch().
+func writeChromePref(userDataDir string) {
+	defaultDir := filepath.Join(userDataDir, "Default")
+	if err := os.MkdirAll(defaultDir, 0o755); err != nil {
+		return
 	}
-	return nil
+	prefs := `{
+  "credentials_enable_service": false,
+  "profile": {
+    "password_manager_enabled": false,
+    "password_manager_leak_detection": false
+  },
+  "password_manager": {
+    "leak_detection": false
+  }
+}`
+	_ = os.WriteFile(filepath.Join(defaultDir, "Preferences"), []byte(prefs), 0o644)
+}
+
+// detectChrome returns the path to an installed Chrome/Chromium binary, or empty string.
+func detectChrome() string {
+	var paths []string
+	switch runtime.GOOS {
+	case "darwin":
+		paths = []string{
+			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+			"/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+			"/Applications/Chromium.app/Contents/MacOS/Chromium",
+		}
+	case "linux":
+		paths = []string{
+			"/usr/bin/google-chrome",
+			"/usr/bin/google-chrome-stable",
+			"/usr/bin/chromium",
+			"/usr/bin/chromium-browser",
+			"/snap/bin/chromium",
+		}
+	}
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// resolveBrowserBin determines which browser binary to use based on config.
+// Returns empty string to let Rod download/use its bundled Chromium.
+func resolveBrowserBin(cfg Config) string {
+	// Explicit ChromeBin takes highest priority (programmatic use)
+	if cfg.ChromeBin != "" {
+		return cfg.ChromeBin
+	}
+
+	browser := strings.ToLower(strings.TrimSpace(cfg.Browser))
+	switch browser {
+	case "chrome":
+		// User explicitly requested installed Chrome
+		if path := detectChrome(); path != "" {
+			log.Printf("[browser] Using installed Chrome: %s", path)
+			return path
+		}
+		log.Printf("[browser] Chrome not found, falling back to Chromium")
+		return "" // fall back to Rod download
+	case "", "chromium":
+		// Default: use Rod's bundled Chromium (download if needed)
+		return ""
+	default:
+		// Treat as a custom path to a browser binary
+		if _, err := os.Stat(browser); err == nil {
+			log.Printf("[browser] Using custom browser: %s", browser)
+			return browser
+		}
+		log.Printf("[browser] Browser binary not found at %s, falling back to Chromium", browser)
+		return ""
+	}
+}
+
+// needsDownload checks if the browser cache directory is empty or missing.
+func needsDownload(browserDir string) bool {
+	entries, err := os.ReadDir(browserDir)
+	if err != nil {
+		return true // directory doesn't exist
+	}
+	return len(entries) == 0
+}
+
+// Close shuts down the browser. Safe to call multiple times.
+func (d *Driver) Close() error {
+	d.closeOnce.Do(func() {
+		close(d.stopCh)
+		if d.browser != nil {
+			d.closeErr = d.browser.Close()
+		}
+	})
+	return d.closeErr
 }
 
 // Execute runs a single step and returns the result.

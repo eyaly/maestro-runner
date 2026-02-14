@@ -11,6 +11,7 @@ import (
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
+	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/input"
 	"github.com/go-rod/rod/lib/proto"
 )
@@ -115,28 +116,73 @@ func (d *Driver) assertVisible(step *flow.AssertVisibleStep) *core.CommandResult
 }
 
 // assertNotVisible asserts that an element is NOT visible.
+// Uses RAF-based polling in the browser for fast resolution (~16ms) instead of
+// CDP round-trips with 200ms polling.
 func (d *Driver) assertNotVisible(step *flow.AssertNotVisibleStep) *core.CommandResult {
 	timeoutMs := step.TimeoutMs
 	if timeoutMs == 0 {
 		timeoutMs = 5000
 	}
-	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
 
-	for time.Now().Before(deadline) {
-		_, info, err := d.findElementOnce(step.Selector)
-		if err != nil {
-			return successResult(fmt.Sprintf("Element %s is not visible", step.Selector.DescribeQuoted()), nil)
-		}
-		if info != nil && !info.Visible {
-			return successResult(fmt.Sprintf("Element %s is not visible", step.Selector.DescribeQuoted()), nil)
-		}
-		time.Sleep(200 * time.Millisecond)
+	selectorType, selectorValue := jsSelectorTypeValue(step.Selector)
+	desc := step.Selector.DescribeQuoted()
+
+	// Use the JS RAF-based polling: runs inside the browser, no CDP round-trips.
+	// Resolves within ~16ms of element disappearing.
+	// ByPromise() tells Rod to await the JS Promise before returning.
+	result, err := d.page.Timeout(time.Duration(timeoutMs+1000) * time.Millisecond).Evaluate(
+		rod.Eval(`(type, value, timeout) => window.__maestro.waitForNotVisible(type, value, timeout)`,
+			selectorType, selectorValue, timeoutMs).ByPromise(),
+	)
+	if err != nil {
+		// JS evaluation failed (e.g. page navigated) — element is gone
+		return successResult(fmt.Sprintf("Element %s is not visible", desc), nil)
+	}
+
+	if result.Value.Bool() {
+		return successResult(fmt.Sprintf("Element %s is not visible", desc), nil)
 	}
 
 	return errorResult(
 		fmt.Errorf("element is still visible after %dms", timeoutMs),
-		fmt.Sprintf("Element %s is still visible", step.Selector.DescribeQuoted()),
+		fmt.Sprintf("Element %s is still visible", desc),
 	)
+}
+
+// jsSelectorTypeValue extracts the selector type and value for use with the
+// browser-side __maestro JS helper functions.
+func jsSelectorTypeValue(sel flow.Selector) (string, string) {
+	switch {
+	case sel.CSS != "":
+		return "css", sel.CSS
+	case sel.TestID != "":
+		return "testId", sel.TestID
+	case sel.Name != "":
+		return "name", sel.Name
+	case sel.Placeholder != "":
+		return "placeholder", sel.Placeholder
+	case sel.Href != "":
+		return "href", sel.Href
+	case sel.Alt != "":
+		return "alt", sel.Alt
+	case sel.Title != "":
+		return "title", sel.Title
+	case sel.Role != "":
+		return "role", sel.Role
+	case sel.ID != "":
+		return "id", sel.ID
+	case sel.TextRegex != "":
+		return "textRegex", sel.TextRegex
+	case sel.TextContains != "":
+		return "textContains", sel.TextContains
+	case sel.Text != "":
+		if looksLikeRegex(sel.Text) {
+			return "textRegex", sel.Text
+		}
+		return "text", sel.Text
+	default:
+		return "text", ""
+	}
 }
 
 // inputText types text into an element. Rod's Input() handles focus+waitEnabled+waitWritable+events.

@@ -136,7 +136,7 @@ func TestRunConfig_Struct(t *testing.T) {
 		OutputDir:   "./reports/test",
 		Parallel:    2,
 		Continuous:  true,
-		Headless:    false,
+		Headed:      false,
 		Platform:    "ios",
 		Devices:     []string{"iPhone-15"},
 		Verbose:     true,

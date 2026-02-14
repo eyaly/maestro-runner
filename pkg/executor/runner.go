@@ -295,9 +295,11 @@ func expandSuites(flows []flow.Flow) []flow.Flow {
 				continue
 			}
 
-			// Inherit appId from suite if not set in test case
-			if tcFlow.Config.AppID == "" && f.Config.AppID != "" {
-				tcFlow.Config.AppID = f.Config.AppID
+			// Inherit appId/url from suite if not set in test case
+			if tcFlow.Config.EffectiveAppID() == "" {
+				if id := f.Config.EffectiveAppID(); id != "" {
+					tcFlow.Config.AppID = id
+				}
 			}
 
 			// Merge suite env with test case env (test case takes precedence)
