@@ -39,6 +39,9 @@ CLAUDE.md
 # Cache (WDA builds, etc.)
 cache/
 
+# Generated at build time
+THIRD_PARTY_LICENSES
+
 # Local-only files
 BUILD_INSTRUCTIONS.md
 testdata/

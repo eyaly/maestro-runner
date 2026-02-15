@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -2876,5 +2877,232 @@ func TestFindByCSSWithNthStateFilterNoNth(t *testing.T) {
 	_, _, err := d.findByAttribute("id", "btn", flow.Selector{Name: "btn", Enabled: &fa})
 	if err == nil {
 		t.Error("findByAttribute should fail when state filter doesn't match")
+	}
+}
+
+// --- Tests for looksLikeRegex ---
+
+func TestLooksLikeRegex(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		// Should detect regex
+		{"Hello.*", true},
+		{"foo.+bar", true},
+		{"test.?end", true},
+		{"a|b", true},
+		{"(group)", true},
+		{"[abc]", true},
+		{"{3}", true},
+		{"^Start", true},
+		{"End$", true},
+		{"foo*bar", true},
+		{"foo+bar", true},
+		{"foo?bar", true},
+
+		// Should NOT detect regex
+		{"Hello World", false},
+		{"simple text", false},
+		{"no.special", false},        // dot without quantifier
+		{"a.b", false},               // dot without quantifier
+		{"middle^caret", false},      // caret not at start
+		{"dollar$middle", false},     // dollar not at end
+		{"escaped\\.dot", false},     // escaped dot with quantifier (backslash prevents detection)
+		{"", false},                  // empty string
+		{"abc123", false},            // alphanumeric only
+		{"hello, world!", false},     // normal punctuation
+	}
+
+	for _, tt := range tests {
+		got := looksLikeRegex(tt.input)
+		if got != tt.want {
+			t.Errorf("looksLikeRegex(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}
+
+// --- Tests for jsSelectorTypeValue ---
+
+func TestJsSelectorTypeValue(t *testing.T) {
+	tests := []struct {
+		name      string
+		selector  flow.Selector
+		wantType  string
+		wantValue string
+	}{
+		{"css", flow.Selector{CSS: "#btn"}, "css", "#btn"},
+		{"testId", flow.Selector{TestID: "submit"}, "testId", "submit"},
+		{"name", flow.Selector{Name: "email"}, "name", "email"},
+		{"placeholder", flow.Selector{Placeholder: "Search"}, "placeholder", "Search"},
+		{"href", flow.Selector{Href: "/about"}, "href", "/about"},
+		{"alt", flow.Selector{Alt: "Logo"}, "alt", "Logo"},
+		{"title", flow.Selector{Title: "Info"}, "title", "Info"},
+		{"role", flow.Selector{Role: "button"}, "role", "button"},
+		{"id", flow.Selector{ID: "main"}, "id", "main"},
+		{"textRegex", flow.Selector{TextRegex: "Hello.*"}, "textRegex", "Hello.*"},
+		{"textContains", flow.Selector{TextContains: "Welcome"}, "textContains", "Welcome"},
+		{"text plain", flow.Selector{Text: "Click Me"}, "text", "Click Me"},
+		{"text looks like regex", flow.Selector{Text: "Hello.*"}, "textRegex", "Hello.*"},
+		{"empty selector", flow.Selector{}, "text", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotType, gotValue := jsSelectorTypeValue(tt.selector)
+			if gotType != tt.wantType {
+				t.Errorf("jsSelectorTypeValue() type = %q, want %q", gotType, tt.wantType)
+			}
+			if gotValue != tt.wantValue {
+				t.Errorf("jsSelectorTypeValue() value = %q, want %q", gotValue, tt.wantValue)
+			}
+		})
+	}
+}
+
+// --- Tests for needsDownload ---
+
+func TestNeedsDownload(t *testing.T) {
+	// Non-existent directory
+	if !needsDownload("/nonexistent/path/xyz") {
+		t.Error("needsDownload should return true for non-existent directory")
+	}
+
+	// Empty directory
+	dir := t.TempDir()
+	if !needsDownload(dir) {
+		t.Error("needsDownload should return true for empty directory")
+	}
+
+	// Directory with files
+	if err := os.WriteFile(dir+"/somefile", []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if needsDownload(dir) {
+		t.Error("needsDownload should return false for non-empty directory")
+	}
+}
+
+// --- Tests for resolveBrowserBin ---
+
+func TestResolveBrowserBin(t *testing.T) {
+	// ChromeBin takes highest priority
+	got := resolveBrowserBin(Config{ChromeBin: "/usr/bin/custom-chrome"})
+	if got != "/usr/bin/custom-chrome" {
+		t.Errorf("expected ChromeBin path, got %q", got)
+	}
+
+	// Browser="chromium" returns empty (use Rod's bundled)
+	got = resolveBrowserBin(Config{Browser: "chromium"})
+	if got != "" {
+		t.Errorf("expected empty for chromium, got %q", got)
+	}
+
+	// Browser="" returns empty (default to Rod's bundled)
+	got = resolveBrowserBin(Config{Browser: ""})
+	if got != "" {
+		t.Errorf("expected empty for empty browser, got %q", got)
+	}
+
+	// Custom binary path that does not exist falls back to empty
+	got = resolveBrowserBin(Config{Browser: "/nonexistent/browser"})
+	if got != "" {
+		t.Errorf("expected empty for nonexistent custom path, got %q", got)
+	}
+
+	// Custom binary path that exists
+	tmpBin := t.TempDir() + "/my-browser"
+	if err := os.WriteFile(tmpBin, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got = resolveBrowserBin(Config{Browser: tmpBin})
+	if got != tmpBin {
+		t.Errorf("expected %q for existing custom binary, got %q", tmpBin, got)
+	}
+}
+
+// --- Tests for writeChromePref ---
+
+func TestWriteChromePref(t *testing.T) {
+	dir := t.TempDir()
+	writeChromePref(dir)
+
+	prefsPath := dir + "/Default/Preferences"
+	data, err := os.ReadFile(prefsPath)
+	if err != nil {
+		t.Fatalf("expected Preferences file to exist: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("Preferences file should not be empty")
+	}
+	if !strings.Contains(string(data), "credentials_enable_service") {
+		t.Error("Preferences should contain credentials_enable_service")
+	}
+}
+
+// --- Test for viewportCenter ---
+
+func TestViewportCenter(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	center := d.viewportCenter()
+	expectedX := float64(d.viewportW) / 2.0
+	expectedY := float64(d.viewportH) / 2.0
+	// proto.Point has X and Y fields
+	if center.X != expectedX {
+		t.Errorf("viewportCenter().X = %f, want %f", center.X, expectedX)
+	}
+	if center.Y != expectedY {
+		t.Errorf("viewportCenter().Y = %f, want %f", center.Y, expectedY)
+	}
+}
+
+// --- Test for SetFindTimeout edge case ---
+
+func TestSetFindTimeoutZero(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	original := d.findTimeoutMs
+	d.SetFindTimeout(0) // Should not change
+	if d.findTimeoutMs != original {
+		t.Errorf("SetFindTimeout(0) should not change timeout, got %d", d.findTimeoutMs)
+	}
+
+	d.SetFindTimeout(-1) // Should not change
+	if d.findTimeoutMs != original {
+		t.Errorf("SetFindTimeout(-1) should not change timeout, got %d", d.findTimeoutMs)
+	}
+}
+
+// --- Test for successResult, errorResult, unsupportedResult ---
+
+func TestResultHelpers(t *testing.T) {
+	sr := successResult("ok", nil)
+	if !sr.Success || sr.Message != "ok" || sr.Element != nil {
+		t.Errorf("successResult unexpected: %+v", sr)
+	}
+
+	elem := &core.ElementInfo{Text: "hello"}
+	sr2 := successResult("found", elem)
+	if !sr2.Success || sr2.Element != elem {
+		t.Errorf("successResult with element unexpected: %+v", sr2)
+	}
+
+	er := errorResult(fmt.Errorf("fail"), "bad")
+	if er.Success || er.Message != "bad" || er.Error == nil {
+		t.Errorf("errorResult unexpected: %+v", er)
+	}
+
+	ur := unsupportedResult("not supported")
+	if ur.Success || ur.Message != "not supported" || ur.Error == nil {
+		t.Errorf("unsupportedResult unexpected: %+v", ur)
 	}
 }
