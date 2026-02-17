@@ -644,6 +644,127 @@ func TestScrollUntilVisibleUpDirection(t *testing.T) {
 	}
 }
 
+// TestScrollUntilVisibleSkipsOffScreenElement tests that scrollUntilVisible
+// keeps scrolling when the element exists in the accessibility tree but is
+// off-screen (visible="false"). This is the core iOS bug: findElement returns
+// off-screen elements, so we must check info.Visible before declaring success.
+func TestScrollUntilVisibleSkipsOffScreenElement(t *testing.T) {
+	scrollCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+
+		if strings.Contains(path, "/dragfromtoforduration") {
+			scrollCount++
+			jsonResponse(w, map[string]interface{}{"status": 0})
+			return
+		}
+		if strings.HasSuffix(path, "/source") {
+			if scrollCount >= 2 {
+				// After 2 scrolls, element is now on screen
+				jsonResponse(w, map[string]interface{}{
+					"value": `<AppiumAUT>
+  <XCUIElementTypeApplication name="TestApp" enabled="true" visible="true" x="0" y="0" width="390" height="844">
+    <XCUIElementTypeButton name="target-btn" label="TargetButton" enabled="true" visible="true" x="50" y="400" width="290" height="50"/>
+  </XCUIElementTypeApplication>
+</AppiumAUT>`,
+				})
+			} else {
+				// Element exists in accessibility tree but is off-screen (visible="false")
+				jsonResponse(w, map[string]interface{}{
+					"value": `<AppiumAUT>
+  <XCUIElementTypeApplication name="TestApp" enabled="true" visible="true" x="0" y="0" width="390" height="844">
+    <XCUIElementTypeButton name="target-btn" label="TargetButton" enabled="true" visible="false" x="50" y="1800" width="290" height="50"/>
+  </XCUIElementTypeApplication>
+</AppiumAUT>`,
+				})
+			}
+			return
+		}
+		if strings.Contains(path, "/window/size") {
+			jsonResponse(w, map[string]interface{}{
+				"value": map[string]interface{}{"width": 390.0, "height": 844.0},
+			})
+			return
+		}
+		jsonResponse(w, map[string]interface{}{"status": 0})
+	}))
+	defer server.Close()
+	driver := createTestDriver(server)
+
+	step := &flow.ScrollUntilVisibleStep{
+		Element:   flow.Selector{Text: "TargetButton"},
+		Direction: "down",
+		BaseStep:  flow.BaseStep{TimeoutMs: 10000},
+	}
+	result := driver.scrollUntilVisible(step)
+
+	if !result.Success {
+		t.Errorf("Expected success, got: %s", result.Message)
+	}
+	if scrollCount < 2 {
+		t.Errorf("Expected at least 2 scrolls (element was off-screen initially), got %d", scrollCount)
+	}
+}
+
+// TestScrollUntilVisibleCaseInsensitiveDirection tests that direction is
+// case-insensitive (e.g., "DOWN", "Down" work the same as "down").
+func TestScrollUntilVisibleCaseInsensitiveDirection(t *testing.T) {
+	scrollCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+
+		if strings.Contains(path, "/dragfromtoforduration") {
+			scrollCount++
+			jsonResponse(w, map[string]interface{}{"status": 0})
+			return
+		}
+		if strings.HasSuffix(path, "/source") {
+			if scrollCount >= 1 {
+				jsonResponse(w, map[string]interface{}{
+					"value": `<AppiumAUT>
+  <XCUIElementTypeApplication name="TestApp" enabled="true" visible="true" x="0" y="0" width="390" height="844">
+    <XCUIElementTypeButton name="target" label="Target" enabled="true" visible="true" x="50" y="100" width="100" height="50"/>
+  </XCUIElementTypeApplication>
+</AppiumAUT>`,
+				})
+			} else {
+				jsonResponse(w, map[string]interface{}{
+					"value": `<AppiumAUT>
+  <XCUIElementTypeApplication name="TestApp" enabled="true" visible="true" x="0" y="0" width="390" height="844">
+  </XCUIElementTypeApplication>
+</AppiumAUT>`,
+				})
+			}
+			return
+		}
+		if strings.Contains(path, "/window/size") {
+			jsonResponse(w, map[string]interface{}{
+				"value": map[string]interface{}{"width": 390.0, "height": 844.0},
+			})
+			return
+		}
+		jsonResponse(w, map[string]interface{}{"status": 0})
+	}))
+	defer server.Close()
+	driver := createTestDriver(server)
+
+	step := &flow.ScrollUntilVisibleStep{
+		Element:   flow.Selector{Text: "Target"},
+		Direction: "DOWN", // uppercase — should still work
+		BaseStep:  flow.BaseStep{TimeoutMs: 10000},
+	}
+	result := driver.scrollUntilVisible(step)
+
+	if !result.Success {
+		t.Errorf("Expected success with uppercase direction, got: %s", result.Message)
+	}
+	if scrollCount < 1 {
+		t.Errorf("Expected at least 1 scroll, got %d", scrollCount)
+	}
+}
+
 // =============================================================================
 // setOrientation tests
 // =============================================================================

@@ -430,7 +430,7 @@ func (d *Driver) scroll(step *flow.ScrollStep) *core.CommandResult {
 }
 
 func (d *Driver) scrollUntilVisible(step *flow.ScrollUntilVisibleStep) *core.CommandResult {
-	direction := step.Direction
+	direction := strings.ToLower(step.Direction)
 	if direction == "" {
 		direction = "down"
 	}
@@ -441,9 +441,12 @@ func (d *Driver) scrollUntilVisible(step *flow.ScrollUntilVisibleStep) *core.Com
 	}
 
 	for i := 0; i < maxScrolls; i++ {
-		// Check if element is visible (includes page source fallback)
+		// Check if element exists AND is visible on screen.
+		// On iOS, findElement can locate off-screen elements in the accessibility tree.
+		// We must verify the element is actually within the viewport (info.Visible)
+		// before declaring success, otherwise we skip scrolling entirely.
 		info, err := d.findElement(step.Element, true, 1000)
-		if err == nil && info != nil {
+		if err == nil && info != nil && info.Visible {
 			return successResult("Element found after scrolling", info)
 		}
 
