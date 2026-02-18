@@ -421,9 +421,8 @@ func (se *ScriptEngine) ExecuteAssertCondition(ctx context.Context, step *flow.A
 func (se *ScriptEngine) CheckCondition(ctx context.Context, cond flow.Condition, driver core.Driver) bool {
 	// Check platform (first — no device call needed)
 	if cond.Platform != "" {
-		expandedPlatform := se.ExpandVariables(cond.Platform)
 		if info := driver.GetPlatformInfo(); info != nil {
-			if !strings.EqualFold(expandedPlatform, info.Platform) {
+			if !strings.EqualFold(cond.Platform, info.Platform) {
 				return false
 			}
 		}
@@ -431,8 +430,7 @@ func (se *ScriptEngine) CheckCondition(ctx context.Context, cond flow.Condition,
 
 	// Check visible
 	if cond.Visible != nil {
-		expandedSelector := se.expandSelector(cond.Visible)
-		visibleStep := &flow.AssertVisibleStep{Selector: *expandedSelector}
+		visibleStep := &flow.AssertVisibleStep{Selector: *cond.Visible}
 		result := driver.Execute(visibleStep)
 		if !result.Success {
 			return false
@@ -441,8 +439,7 @@ func (se *ScriptEngine) CheckCondition(ctx context.Context, cond flow.Condition,
 
 	// Check notVisible
 	if cond.NotVisible != nil {
-		expandedSelector := se.expandSelector(cond.NotVisible)
-		notVisibleStep := &flow.AssertNotVisibleStep{Selector: *expandedSelector}
+		notVisibleStep := &flow.AssertNotVisibleStep{Selector: *cond.NotVisible}
 		result := driver.Execute(notVisibleStep)
 		if !result.Success {
 			return false
