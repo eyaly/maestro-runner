@@ -7,9 +7,6 @@ import (
 	"strings"
 	"time"
 
-	goios "github.com/danielpaulus/go-ios/ios"
-	"github.com/danielpaulus/go-ios/ios/installationproxy"
-	"github.com/danielpaulus/go-ios/ios/zipconduit"
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
 	"github.com/devicelab-dev/maestro-runner/pkg/logger"
@@ -771,7 +768,7 @@ func (d *Driver) clearState(step *flow.ClearStateStep) *core.CommandResult {
 
 // clearAppState uninstalls and reinstalls an app to clear its state.
 // Requires --app-file for both simulators and real devices.
-// On simulators, uses simctl. On physical devices, uses go-ios.
+// On simulators, uses simctl. On physical devices, uses xcrun devicectl.
 func (d *Driver) clearAppState(bundleID string) *core.CommandResult {
 	if d.appFile == "" {
 		return errorResult(fmt.Errorf("clearState on iOS requires --app-file for reinstall"),
@@ -802,32 +799,20 @@ func (d *Driver) clearAppStateSimulator(bundleID string) *core.CommandResult {
 }
 
 func (d *Driver) clearAppStateDevice(bundleID string) *core.CommandResult {
-	entry, err := goios.GetDevice(d.udid)
-	if err != nil {
-		return errorResult(fmt.Errorf("device %s not found: %w", d.udid, err),
-			"Failed to connect to device for uninstall")
+	// Uninstall via xcrun devicectl (uses remoted, doesn't disrupt usbmuxd port forwarding)
+	cmd := exec.Command("xcrun", "devicectl", "device", "uninstall", "app",
+		"--device", d.udid, bundleID)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return errorResult(fmt.Errorf("devicectl uninstall failed: %w: %s", err, string(output)),
+			"Failed to uninstall app on device")
 	}
 
-	conn, err := installationproxy.New(entry)
-	if err != nil {
-		return errorResult(fmt.Errorf("failed to connect to installation service: %w", err),
-			"Failed to connect to device installation service")
-	}
-	defer conn.Close()
-
-	if err := conn.Uninstall(bundleID); err != nil {
-		return errorResult(fmt.Errorf("failed to uninstall %s: %w", bundleID, err),
-			"Failed to uninstall app")
-	}
-
-	zcConn, err := zipconduit.New(entry)
-	if err != nil {
-		return errorResult(fmt.Errorf("failed to connect to install service: %w", err),
-			"Failed to connect to device for reinstall")
-	}
-	if err := zcConn.SendFile(d.appFile); err != nil {
-		return errorResult(fmt.Errorf("failed to reinstall app: %w", err),
-			"Failed to reinstall app after uninstall")
+	// Reinstall via xcrun devicectl
+	cmd = exec.Command("xcrun", "devicectl", "device", "install", "app",
+		"--device", d.udid, d.appFile)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return errorResult(fmt.Errorf("devicectl install failed: %w: %s", err, string(output)),
+			"Failed to reinstall app on device")
 	}
 
 	return successResult(fmt.Sprintf("Cleared state for %s (uninstall+reinstall)", bundleID), nil)
