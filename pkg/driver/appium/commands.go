@@ -433,6 +433,22 @@ func (d *Driver) hideKeyboard(step *flow.HideKeyboardStep) *core.CommandResult {
 // App management
 
 func (d *Driver) launchApp(step *flow.LaunchAppStep) *core.CommandResult {
+	// Handle newSession (Appium only)
+	if step.NewSession {
+		if d.platform == "ios" && !d.client.IsRealDevice() {
+			// iOS simulator: no benefit from session restart
+			logger.Info("newSession ignored on iOS simulator")
+		} else {
+			if err := d.RestartSession(); err != nil {
+				return errorResult(err, "Failed to create new Appium session")
+			}
+			// On iOS real device, skip clearState — fresh session is already clean
+			if d.platform == "ios" {
+				step.ClearState = false
+			}
+		}
+	}
+
 	appID := step.AppID
 	if appID == "" {
 		appID = d.appID

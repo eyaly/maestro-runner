@@ -174,6 +174,11 @@ func (c *Client) Platform() string {
 	return c.platform
 }
 
+// IsRealDevice returns true for physical devices, false for simulators/emulators.
+func (c *Client) IsRealDevice() bool {
+	return c.isRealDevice
+}
+
 // ScreenSize returns the screen dimensions.
 func (c *Client) ScreenSize() (int, int) {
 	return c.screenW, c.screenH

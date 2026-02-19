@@ -174,6 +174,364 @@ func TestGetAllPermissions(t *testing.T) {
 }
 
 // =============================================================================
+// newSession / RestartSession tests
+// =============================================================================
+
+func TestLaunchAppNewSessionAndroid(t *testing.T) {
+	sessionCreateCount := 0
+	sessionDeleteCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+
+		if path == "/session" && r.Method == "POST" {
+			sessionCreateCount++
+			writeJSON(w, map[string]interface{}{
+				"value": map[string]interface{}{
+					"sessionId": "new-session",
+					"capabilities": map[string]interface{}{
+						"platformName": "Android",
+					},
+				},
+			})
+			return
+		}
+		if strings.HasPrefix(path, "/session/") && r.Method == "DELETE" {
+			sessionDeleteCount++
+			writeJSON(w, map[string]interface{}{"value": nil})
+			return
+		}
+		if strings.Contains(path, "/window/rect") {
+			writeJSON(w, map[string]interface{}{
+				"value": map[string]interface{}{"width": 1080.0, "height": 2340.0, "x": 0.0, "y": 0.0},
+			})
+			return
+		}
+		writeJSON(w, map[string]interface{}{"value": nil})
+	}))
+	defer server.Close()
+
+	driver := createTestAppiumDriver(server)
+	driver.capabilities = map[string]interface{}{
+		"platformName":      "Android",
+		"appium:appPackage": "com.example.app",
+	}
+
+	step := &flow.LaunchAppStep{
+		AppID:      "com.example.app",
+		NewSession: true,
+		ClearState: true,
+	}
+	result := driver.launchApp(step)
+
+	if !result.Success {
+		t.Fatalf("expected success, got error: %v - %s", result.Error, result.Message)
+	}
+	if sessionDeleteCount != 1 {
+		t.Fatalf("expected 1 session delete (Disconnect), got %d", sessionDeleteCount)
+	}
+	if sessionCreateCount != 1 {
+		t.Fatalf("expected 1 session create (Connect), got %d", sessionCreateCount)
+	}
+	// ClearState should still be true on Android
+	if !step.ClearState {
+		t.Fatal("expected ClearState to remain true on Android")
+	}
+}
+
+func TestLaunchAppNewSessionIOSRealDevice(t *testing.T) {
+	sessionCreateCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+
+		if path == "/session" && r.Method == "POST" {
+			sessionCreateCount++
+			writeJSON(w, map[string]interface{}{
+				"value": map[string]interface{}{
+					"sessionId": "new-session",
+					"capabilities": map[string]interface{}{
+						"platformName": "iOS",
+						"isRealDevice": true,
+					},
+				},
+			})
+			return
+		}
+		if strings.Contains(path, "/window/rect") {
+			writeJSON(w, map[string]interface{}{
+				"value": map[string]interface{}{"width": 390.0, "height": 844.0, "x": 0.0, "y": 0.0},
+			})
+			return
+		}
+		writeJSON(w, map[string]interface{}{"value": nil})
+	}))
+	defer server.Close()
+
+	driver := createTestAppiumDriver(server)
+	driver.platform = "ios"
+	driver.client.platform = "ios"
+	driver.client.isRealDevice = true
+	driver.capabilities = map[string]interface{}{
+		"platformName":    "iOS",
+		"appium:bundleId": "com.example.app",
+	}
+
+	step := &flow.LaunchAppStep{
+		AppID:      "com.example.app",
+		NewSession: true,
+		ClearState: true,
+	}
+	result := driver.launchApp(step)
+
+	if !result.Success {
+		t.Fatalf("expected success, got error: %v - %s", result.Error, result.Message)
+	}
+	if sessionCreateCount != 1 {
+		t.Fatalf("expected 1 session create, got %d", sessionCreateCount)
+	}
+	// ClearState should be set to false on iOS real device
+	if step.ClearState {
+		t.Fatal("expected ClearState to be false on iOS real device with newSession")
+	}
+}
+
+func TestLaunchAppNewSessionIOSSimulatorIgnored(t *testing.T) {
+	sessionCreateCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+
+		if path == "/session" && r.Method == "POST" {
+			sessionCreateCount++
+			writeJSON(w, map[string]interface{}{
+				"value": map[string]interface{}{
+					"sessionId":    "test-session",
+					"capabilities": map[string]interface{}{"platformName": "iOS"},
+				},
+			})
+			return
+		}
+		writeJSON(w, map[string]interface{}{"value": nil})
+	}))
+	defer server.Close()
+
+	driver := createTestAppiumDriver(server)
+	driver.platform = "ios"
+	driver.client.platform = "ios"
+	driver.client.isRealDevice = false // simulator
+	driver.capabilities = map[string]interface{}{
+		"platformName": "iOS",
+	}
+
+	step := &flow.LaunchAppStep{
+		AppID:      "com.example.app",
+		NewSession: true,
+	}
+	result := driver.launchApp(step)
+
+	if !result.Success {
+		t.Fatalf("expected success, got error: %v - %s", result.Error, result.Message)
+	}
+	// No session should have been created (newSession ignored on simulator)
+	if sessionCreateCount != 0 {
+		t.Fatalf("expected 0 session creates on iOS simulator, got %d", sessionCreateCount)
+	}
+}
+
+func TestLaunchAppNewSessionFalseDefault(t *testing.T) {
+	sessionCreateCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+
+		if path == "/session" && r.Method == "POST" {
+			sessionCreateCount++
+			writeJSON(w, map[string]interface{}{
+				"value": map[string]interface{}{
+					"sessionId":    "test-session",
+					"capabilities": map[string]interface{}{"platformName": "Android"},
+				},
+			})
+			return
+		}
+		writeJSON(w, map[string]interface{}{"value": nil})
+	}))
+	defer server.Close()
+
+	driver := createTestAppiumDriver(server)
+
+	step := &flow.LaunchAppStep{
+		AppID: "com.example.app",
+		// NewSession defaults to false
+	}
+	result := driver.launchApp(step)
+
+	if !result.Success {
+		t.Fatalf("expected success, got error: %v - %s", result.Error, result.Message)
+	}
+	// No session should have been created
+	if sessionCreateCount != 0 {
+		t.Fatalf("expected 0 session creates when newSession=false, got %d", sessionCreateCount)
+	}
+}
+
+func TestRestartSessionDisconnectFailsStillConnects(t *testing.T) {
+	connectCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+
+		// Disconnect fails
+		if strings.HasPrefix(path, "/session/") && r.Method == "DELETE" {
+			writeJSON(w, map[string]interface{}{
+				"value": map[string]interface{}{
+					"error":   "disconnect failed",
+					"message": "Session not found",
+				},
+			})
+			return
+		}
+		// Connect succeeds
+		if path == "/session" && r.Method == "POST" {
+			connectCalled = true
+			writeJSON(w, map[string]interface{}{
+				"value": map[string]interface{}{
+					"sessionId":    "new-session",
+					"capabilities": map[string]interface{}{"platformName": "Android"},
+				},
+			})
+			return
+		}
+		if strings.Contains(path, "/window/rect") {
+			writeJSON(w, map[string]interface{}{
+				"value": map[string]interface{}{"width": 1080.0, "height": 2340.0, "x": 0.0, "y": 0.0},
+			})
+			return
+		}
+		writeJSON(w, map[string]interface{}{"value": nil})
+	}))
+	defer server.Close()
+
+	driver := createTestAppiumDriver(server)
+	driver.capabilities = map[string]interface{}{"platformName": "Android"}
+
+	err := driver.RestartSession()
+	if err != nil {
+		t.Fatalf("expected success even when Disconnect fails, got: %v", err)
+	}
+	if !connectCalled {
+		t.Fatal("expected Connect to be called even after Disconnect failure")
+	}
+}
+
+func TestRestartSessionConnectFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+
+		if path == "/session" && r.Method == "POST" {
+			writeJSON(w, map[string]interface{}{
+				"value": map[string]interface{}{
+					"error":   "session create failed",
+					"message": "Cannot create session",
+				},
+			})
+			return
+		}
+		writeJSON(w, map[string]interface{}{"value": nil})
+	}))
+	defer server.Close()
+
+	driver := createTestAppiumDriver(server)
+	driver.capabilities = map[string]interface{}{"platformName": "Android"}
+
+	err := driver.RestartSession()
+	if err == nil {
+		t.Fatal("expected error when Connect fails")
+	}
+	if !strings.Contains(err.Error(), "failed to create new session") {
+		t.Fatalf("expected 'failed to create new session' error, got: %v", err)
+	}
+}
+
+func TestRestartSessionResetsState(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+
+		if path == "/session" && r.Method == "POST" {
+			writeJSON(w, map[string]interface{}{
+				"value": map[string]interface{}{
+					"sessionId":    "new-session",
+					"capabilities": map[string]interface{}{"platformName": "Android"},
+				},
+			})
+			return
+		}
+		if strings.Contains(path, "/window/rect") {
+			writeJSON(w, map[string]interface{}{
+				"value": map[string]interface{}{"width": 1080.0, "height": 2340.0, "x": 0.0, "y": 0.0},
+			})
+			return
+		}
+		writeJSON(w, map[string]interface{}{"value": nil})
+	}))
+	defer server.Close()
+
+	driver := createTestAppiumDriver(server)
+	driver.capabilities = map[string]interface{}{"platformName": "Android"}
+	driver.waitForIdleTimeoutSet = true
+	driver.lastTappedElementID = "some-element"
+
+	err := driver.RestartSession()
+	if err != nil {
+		t.Fatalf("RestartSession failed: %v", err)
+	}
+	if driver.waitForIdleTimeoutSet {
+		t.Error("expected waitForIdleTimeoutSet to be reset to false")
+	}
+	if driver.lastTappedElementID != "" {
+		t.Error("expected lastTappedElementID to be reset to empty")
+	}
+}
+
+func TestDeepCopyCaps(t *testing.T) {
+	original := map[string]interface{}{
+		"platformName":      "Android",
+		"appium:appPackage": "com.example.app",
+		"appium:settings": map[string]interface{}{
+			"waitForIdleTimeout": 0,
+		},
+	}
+
+	copied := deepCopyCaps(original)
+
+	// Modify the copy
+	copied["appium:autoLaunch"] = false
+	if settings, ok := copied["appium:settings"].(map[string]interface{}); ok {
+		settings["waitForIdleTimeout"] = 100
+	}
+
+	// Original should be unmodified
+	if _, exists := original["appium:autoLaunch"]; exists {
+		t.Error("original should not have appium:autoLaunch after modifying copy")
+	}
+	if settings, ok := original["appium:settings"].(map[string]interface{}); ok {
+		if val, ok := settings["waitForIdleTimeout"].(int); !ok || val != 0 {
+			t.Errorf("original settings should be unmodified, got waitForIdleTimeout=%v", settings["waitForIdleTimeout"])
+		}
+	}
+}
+
+func TestDeepCopyCapsNil(t *testing.T) {
+	result := deepCopyCaps(nil)
+	if result != nil {
+		t.Error("expected nil for nil input")
+	}
+}
+
+// =============================================================================
 // Driver method tests using mock servers
 // =============================================================================
 

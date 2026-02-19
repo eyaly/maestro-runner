@@ -320,9 +320,10 @@ type LaunchAppStep struct {
 	ClearState    bool              `yaml:"clearState"`
 	ClearKeychain bool              `yaml:"clearKeychain"`
 	StopApp       *bool             `yaml:"stopApp"`
+	NewSession    bool              `yaml:"newSession"` // Appium only: create fresh session
 	Permissions   map[string]string `yaml:"permissions"`
-	Arguments     map[string]any    `yaml:"arguments"`    // Launch arguments (-key value pairs)
-	Environment   map[string]string `yaml:"environment"`  // Launch environment variables
+	Arguments     map[string]any    `yaml:"arguments"`   // Launch arguments (-key value pairs)
+	Environment   map[string]string `yaml:"environment"` // Launch environment variables
 }
 
 // StopAppStep stops an app.

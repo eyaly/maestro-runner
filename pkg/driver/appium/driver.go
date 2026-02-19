@@ -2,12 +2,14 @@ package appium
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
+	"github.com/devicelab-dev/maestro-runner/pkg/logger"
 )
 
 // DefaultFindTimeout is the default timeout for element operations.
@@ -16,16 +18,20 @@ const DefaultFindTimeout = 10 * time.Second
 // Driver implements core.Driver using Appium server.
 type Driver struct {
 	client                    *Client
-	platform                  string        // detected from page source or capabilities
-	appID                     string        // current app ID
-	findTimeout               time.Duration // configurable timeout for finding elements
-	currentWaitForIdleTimeout int           // track current value to skip redundant calls
-	waitForIdleTimeoutSet     bool          // whether waitForIdleTimeout has been set
-	lastTappedElementID       string        // iOS: last element clicked via ClickElement, used by inputText
+	capabilities              map[string]interface{} // stored for session recreation (deep copy of original)
+	platform                  string                 // detected from page source or capabilities
+	appID                     string                 // current app ID
+	findTimeout               time.Duration          // configurable timeout for finding elements
+	currentWaitForIdleTimeout int                    // track current value to skip redundant calls
+	waitForIdleTimeoutSet     bool                   // whether waitForIdleTimeout has been set
+	lastTappedElementID       string                 // iOS: last element clicked via ClickElement, used by inputText
 }
 
 // NewDriver creates a new Appium driver.
 func NewDriver(serverURL string, capabilities map[string]interface{}) (*Driver, error) {
+	// Deep-copy capabilities before Connect modifies them (adds autoLaunch, settings, etc.)
+	savedCaps := deepCopyCaps(capabilities)
+
 	client := NewClient(serverURL)
 
 	if err := client.Connect(capabilities); err != nil {
@@ -33,8 +39,9 @@ func NewDriver(serverURL string, capabilities map[string]interface{}) (*Driver, 
 	}
 
 	d := &Driver{
-		client:   client,
-		platform: client.Platform(),
+		client:       client,
+		capabilities: savedCaps,
+		platform:     client.Platform(),
 	}
 
 	// Extract app ID from capabilities
@@ -61,6 +68,47 @@ func NewDriver(serverURL string, capabilities map[string]interface{}) (*Driver, 
 // Close disconnects from Appium server.
 func (d *Driver) Close() error {
 	return d.client.Disconnect()
+}
+
+// RestartSession closes the existing Appium session and creates a fresh one.
+func (d *Driver) RestartSession() error {
+	if err := d.client.Disconnect(); err != nil {
+		logger.Warn("failed to disconnect existing session: %v", err)
+	}
+	// Deep-copy stored caps so Connect can mutate them freely
+	caps := deepCopyCaps(d.capabilities)
+	if err := d.client.Connect(caps); err != nil {
+		return fmt.Errorf("failed to create new session: %w", err)
+	}
+	d.platform = d.client.Platform()
+	// Reset cached state
+	d.waitForIdleTimeoutSet = false
+	d.lastTappedElementID = ""
+	return nil
+}
+
+// deepCopyCaps returns a deep copy of a capabilities map via JSON round-trip.
+func deepCopyCaps(caps map[string]interface{}) map[string]interface{} {
+	if caps == nil {
+		return nil
+	}
+	data, err := json.Marshal(caps)
+	if err != nil {
+		// Fallback: shallow copy
+		cp := make(map[string]interface{}, len(caps))
+		for k, v := range caps {
+			cp[k] = v
+		}
+		return cp
+	}
+	var cp map[string]interface{}
+	if err := json.Unmarshal(data, &cp); err != nil {
+		cp = make(map[string]interface{}, len(caps))
+		for k, v := range caps {
+			cp[k] = v
+		}
+	}
+	return cp
 }
 
 // Execute implements core.Driver.
