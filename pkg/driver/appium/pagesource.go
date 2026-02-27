@@ -328,14 +328,14 @@ func matchesSelector(elem *ParsedElement, sel flow.Selector, platform string) bo
 		}
 	}
 
-	// ID matching
+	// ID matching (supports regex)
 	if sel.ID != "" {
 		if platform == "ios" {
-			if !strings.Contains(elem.Name, sel.ID) {
+			if !matchesID(sel.ID, elem.Name) {
 				return false
 			}
 		} else {
-			if !strings.Contains(elem.ResourceID, sel.ID) {
+			if !matchesID(sel.ID, elem.ResourceID) {
 				return false
 			}
 		}
@@ -378,6 +378,16 @@ func withinTolerance(actual, expected, tolerance int) bool {
 		diff = -diff
 	}
 	return diff <= tolerance
+}
+
+// matchesID checks if an ID pattern matches the given identifier.
+// Always tries regex matching first; falls back to substring contains on compile error.
+func matchesID(pattern, id string) bool {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return strings.Contains(id, pattern)
+	}
+	return re.MatchString(id)
 }
 
 func matchesText(pattern string, texts ...string) bool {

@@ -336,6 +336,42 @@ func TestBuildSelectorsID(t *testing.T) {
 	}
 }
 
+func TestBuildSelectorsIDRegex(t *testing.T) {
+	// Regex ID pattern — wrapped with .* and quotes-only escaping (regex chars preserved)
+	sel := flow.Selector{ID: `item_\d+`}
+	strategies, err := buildSelectors(sel, 5000)
+	if err != nil {
+		t.Fatalf("buildSelectors failed: %v", err)
+	}
+
+	if len(strategies) != 1 {
+		t.Errorf("expected 1 strategy, got %d", len(strategies))
+	}
+
+	s := strategies[0]
+	if !strings.Contains(s.Value, "resourceIdMatches") {
+		t.Error("expected resourceIdMatches in selector")
+	}
+	// Regex chars should NOT be escaped
+	if !strings.Contains(s.Value, `\d+`) {
+		t.Errorf("expected regex pattern preserved in selector, got: %s", s.Value)
+	}
+}
+
+func TestBuildSelectorsIDLiteral(t *testing.T) {
+	// Literal ID should be wrapped with .* for partial matching
+	sel := flow.Selector{ID: "login_btn"}
+	strategies, err := buildSelectors(sel, 5000)
+	if err != nil {
+		t.Fatalf("buildSelectors failed: %v", err)
+	}
+
+	s := strategies[0]
+	if !strings.Contains(s.Value, `".*login_btn.*"`) {
+		t.Errorf("literal ID should be wrapped with .*, got: %s", s.Value)
+	}
+}
+
 func TestBuildSelectorsWithStateFilters(t *testing.T) {
 	enabled := true
 	checked := false

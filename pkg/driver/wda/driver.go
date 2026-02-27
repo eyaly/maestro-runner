@@ -516,7 +516,12 @@ func (d *Driver) findElementByWDA(sel flow.Selector) (*core.ElementInfo, error) 
 
 	// Try class chain for accessibility ID
 	if sel.ID != "" {
-		query := fmt.Sprintf("**/XCUIElementTypeAny[`name CONTAINS '%s'%s`]", sel.ID, stateFilter)
+		// Use CONTAINS for literal IDs, MATCHES for regex patterns
+		op := "CONTAINS"
+		if looksLikeRegex(sel.ID) {
+			op = "MATCHES"
+		}
+		query := fmt.Sprintf("**/XCUIElementTypeAny[`name %s '%s'%s`]", op, sel.ID, stateFilter)
 		elemID, err := d.client.FindElement("class chain", query)
 		if err == nil && elemID != "" {
 			return d.getElementInfo(elemID)

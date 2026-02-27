@@ -1024,8 +1024,9 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 	stateFilters := buildStateFilters(sel)
 
 	// ID-based selector - use resourceIdMatches for partial matching
+	// Always wrap with .* — works for both literal IDs and regex patterns
 	if sel.ID != "" {
-		escaped := escapeUIAutomator(sel.ID)
+		escaped := escapeUIAutomatorString(sel.ID)
 		if preferClickable {
 			// Try clickable first for tap commands
 			strategies = append(strategies, LocatorStrategy{

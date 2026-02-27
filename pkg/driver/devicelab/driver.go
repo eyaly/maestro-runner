@@ -434,6 +434,11 @@ func (d *Driver) findElementWithContext(ctx context.Context, sel flow.Selector, 
 		return d.findElementByPageSourceWithContext(ctx, sel)
 	}
 
+	// Handle regex ID selectors via page source (UiAutomator calls are slow when element absent)
+	if sel.ID != "" && looksLikeRegex(sel.ID) {
+		return d.findElementByPageSourceWithContext(ctx, sel)
+	}
+
 	// Build strategies for UiAutomator
 	var strategies []LocatorStrategy
 	var err error
@@ -514,6 +519,11 @@ func (d *Driver) findElementOnce(sel flow.Selector) (*uiautomator2.Element, *cor
 
 	// Handle index selectors with single page source fetch
 	if sel.HasNonZeroIndex() {
+		return d.findElementByPageSourceOnce(sel)
+	}
+
+	// Handle regex ID selectors with page source
+	if sel.ID != "" && looksLikeRegex(sel.ID) {
 		return d.findElementByPageSourceOnce(sel)
 	}
 
@@ -982,9 +992,10 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 	var strategies []LocatorStrategy
 	stateFilters := buildStateFilters(sel)
 
-	// ID-based selector
+	// ID-based selector - use resourceIdMatches for partial matching
+	// Always wrap with .* — works for both literal IDs and regex patterns
 	if sel.ID != "" {
-		escaped := escapeUIAutomator(sel.ID)
+		escaped := escapeUIAutomatorString(sel.ID)
 		if preferClickable {
 			strategies = append(strategies, LocatorStrategy{
 				Strategy: uiautomator2.StrategyUIAutomator,

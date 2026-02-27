@@ -481,6 +481,55 @@ func TestFlattenElement(t *testing.T) {
 	}
 }
 
+func TestMatchesID(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		id      string
+		want    bool
+	}{
+		{"literal contains", "login", "loginButton", true},
+		{"literal no match", "signup", "loginButton", false},
+		{"regex match", "login.*Button", "loginButton", true},
+		{"regex no match", "^signup", "loginButton", false},
+		{"wildcard match", "item_.*", "item_abc", true},
+		{"regex digit match", "item_\\d+", "item_123", true},
+		{"invalid regex fallback", "[invalid", "test[invalid", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchesID(tt.pattern, tt.id)
+			if got != tt.want {
+				t.Errorf("matchesID(%q, %q) = %v, want %v", tt.pattern, tt.id, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFilterBySelectorRegexID(t *testing.T) {
+	elements := []*ParsedElement{
+		{Name: "loginButton", Label: "Login"},
+		{Name: "settingsButton", Label: "Settings"},
+		{Name: "logoutButton", Label: "Logout"},
+		{Name: "profileView", Label: "Profile"},
+	}
+
+	// Regex ID should match multiple buttons
+	sel := flow.Selector{ID: ".*Button"}
+	filtered := FilterBySelector(elements, sel)
+	if len(filtered) != 3 {
+		t.Errorf("Expected 3 elements matching '.*Button', got %d", len(filtered))
+	}
+
+	// More specific regex
+	sel = flow.Selector{ID: "log.*Button"}
+	filtered = FilterBySelector(elements, sel)
+	if len(filtered) != 2 {
+		t.Errorf("Expected 2 elements matching 'log.*Button', got %d", len(filtered))
+	}
+}
+
 // TestMatchesTextWithNewlines tests text matching with newlines
 func TestMatchesTextWithNewlines(t *testing.T) {
 	// Test that newlines are handled in regex matching

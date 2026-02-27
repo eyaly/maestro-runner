@@ -459,6 +459,59 @@ func TestLooksLikeRegex(t *testing.T) {
 	}
 }
 
+func TestMatchesID(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		id      string
+		want    bool
+	}{
+		{"literal contains", "login", "com.app:id/login_btn", true},
+		{"literal no match", "signup", "com.app:id/login_btn", false},
+		{"regex match", "login_\\d+", "com.app:id/login_123", true},
+		{"regex no match", "^login$", "com.app:id/login", false},
+		{"wildcard match", "item_.*", "item_abc", true},
+		{"invalid regex fallback", "[invalid", "test[invalid", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchesID(tt.pattern, tt.id)
+			if got != tt.want {
+				t.Errorf("matchesID(%q, %q) = %v, want %v", tt.pattern, tt.id, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFilterBySelector_RegexID_Android(t *testing.T) {
+	elements := []*ParsedElement{
+		{ResourceID: "com.app:id/item_123", Text: "Item 1"},
+		{ResourceID: "com.app:id/item_456", Text: "Item 2"},
+		{ResourceID: "com.app:id/header", Text: "Header"},
+	}
+
+	sel := flow.Selector{ID: "item_\\d+"}
+	result := FilterBySelector(elements, sel, "android")
+	if len(result) != 2 {
+		t.Errorf("Expected 2 elements matching regex ID, got %d", len(result))
+	}
+}
+
+func TestFilterBySelector_RegexID_iOS(t *testing.T) {
+	elements := []*ParsedElement{
+		{Name: "loginButton", Label: "Login"},
+		{Name: "settingsButton", Label: "Settings"},
+		{Name: "profileView", Label: "Profile"},
+	}
+
+	sel := flow.Selector{ID: ".*Button"}
+	result := FilterBySelector(elements, sel, "ios")
+	if len(result) != 2 {
+		t.Errorf("Expected 2 elements matching regex ID, got %d", len(result))
+	}
+}
+
 func TestFilterContainsDescendants(t *testing.T) {
 	allElements := []*ParsedElement{
 		{Text: "Container", Bounds: core.Bounds{X: 0, Y: 0, Width: 500, Height: 500}},

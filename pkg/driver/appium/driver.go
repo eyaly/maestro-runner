@@ -301,11 +301,24 @@ func (d *Driver) findElementDirect(sel flow.Selector) (*core.ElementInfo, error)
 	// Try ID first
 	if sel.ID != "" {
 		if d.platform == "ios" {
-			if elemID, err := d.client.FindElement("accessibility id", sel.ID); err == nil {
-				return d.getElementInfo(elemID)
+			if looksLikeRegex(sel.ID) {
+				// Use predicate string with MATCHES for regex patterns
+				escaped := escapeIOSPredicateString(sel.ID)
+				predicate := fmt.Sprintf(`name MATCHES "%s"`, escaped)
+				if elemID, err := d.client.FindElement("-ios predicate string", predicate); err == nil && elemID != "" {
+					return d.getElementInfo(elemID)
+				}
+			} else {
+				if elemID, err := d.client.FindElement("accessibility id", sel.ID); err == nil {
+					return d.getElementInfo(elemID)
+				}
 			}
 		} else {
-			// Android: use UiAutomator for ID (faster than id strategy)
+			if looksLikeRegex(sel.ID) {
+				// Regex ID: use page source (Appium's UiAutomator calls are slow when element absent)
+				return d.findElementByPageSource(sel)
+			}
+			// Literal ID: use UiAutomator for fast lookup
 			escaped := escapeUIAutomatorString(sel.ID)
 			uiSelector := fmt.Sprintf(`new UiSelector().resourceIdMatches(".*%s.*")`, escaped)
 			if elemID, err := d.client.FindElement("-android uiautomator", uiSelector); err == nil && elemID != "" {

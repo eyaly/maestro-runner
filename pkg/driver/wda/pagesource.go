@@ -185,9 +185,9 @@ func matchesSelector(elem *ParsedElement, sel flow.Selector) bool {
 		}
 	}
 
-	// ID matching (accessibility identifier)
+	// ID matching (accessibility identifier, supports regex)
 	if sel.ID != "" {
-		if !strings.Contains(elem.Name, sel.ID) {
+		if !matchesID(sel.ID, elem.Name) {
 			return false
 		}
 	}
@@ -227,6 +227,16 @@ func withinTolerance(actual, expected, tolerance int) bool {
 		diff = -diff
 	}
 	return diff <= tolerance
+}
+
+// matchesID checks if an ID pattern matches the given identifier.
+// Always tries regex matching first; falls back to substring contains on compile error.
+func matchesID(pattern, id string) bool {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return strings.Contains(id, pattern)
+	}
+	return re.MatchString(id)
 }
 
 // matchesText checks if pattern matches any of the text fields.

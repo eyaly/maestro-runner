@@ -357,6 +357,80 @@ func TestMatchesSelector(t *testing.T) {
 	}
 }
 
+func TestMatchesSelectorRegexID(t *testing.T) {
+	tests := []struct {
+		name string
+		elem *ParsedElement
+		sel  flow.Selector
+		want bool
+	}{
+		{
+			"regex matches resource ID",
+			&ParsedElement{ResourceID: "com.app:id/item_123"},
+			flow.Selector{ID: "item_\\d+"},
+			true,
+		},
+		{
+			"regex no match",
+			&ParsedElement{ResourceID: "com.app:id/item_abc"},
+			flow.Selector{ID: "item_\\d+$"},
+			false,
+		},
+		{
+			"wildcard regex matches",
+			&ParsedElement{ResourceID: "com.app:id/my-item-id_456"},
+			flow.Selector{ID: "my-item-id_.*"},
+			true,
+		},
+		{
+			"literal ID still works as contains",
+			&ParsedElement{ResourceID: "com.app:id/login_btn"},
+			flow.Selector{ID: "login_btn"},
+			true,
+		},
+		{
+			"invalid regex falls back to contains",
+			&ParsedElement{ResourceID: "com.app:id/test[invalid"},
+			flow.Selector{ID: "test[invalid"},
+			true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchesSelector(tt.elem, tt.sel)
+			if got != tt.want {
+				t.Errorf("matchesSelector() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchesID(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		id      string
+		want    bool
+	}{
+		{"literal contains", "login", "com.app:id/login_btn", true},
+		{"literal no match", "signup", "com.app:id/login_btn", false},
+		{"regex match", "login_\\d+", "com.app:id/login_123", true},
+		{"regex no match", "^login$", "com.app:id/login", false},
+		{"wildcard match", "item_.*", "item_abc", true},
+		{"invalid regex fallback", "[invalid", "test[invalid", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchesID(tt.pattern, tt.id)
+			if got != tt.want {
+				t.Errorf("matchesID(%q, %q) = %v, want %v", tt.pattern, tt.id, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMatchesSelectorStateFilters(t *testing.T) {
 	elem := &ParsedElement{
 		Text:     "Checkbox",

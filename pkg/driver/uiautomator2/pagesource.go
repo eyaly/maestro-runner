@@ -194,9 +194,9 @@ func matchesSelector(elem *ParsedElement, sel flow.Selector) bool {
 		}
 	}
 
-	// ID matching (partial)
+	// ID matching (partial, supports regex)
 	if sel.ID != "" {
-		if !strings.Contains(elem.ResourceID, sel.ID) {
+		if !matchesID(sel.ID, elem.ResourceID) {
 			return false
 		}
 	}
@@ -240,6 +240,16 @@ func withinTolerance(actual, expected, tolerance int) bool {
 		diff = -diff
 	}
 	return diff <= tolerance
+}
+
+// matchesID checks if an ID pattern matches the given resource ID.
+// Always tries regex matching first; falls back to substring contains on compile error.
+func matchesID(pattern, id string) bool {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return strings.Contains(id, pattern)
+	}
+	return re.MatchString(id)
 }
 
 // matchesText checks if pattern matches the element's text, content-desc, or hint.
