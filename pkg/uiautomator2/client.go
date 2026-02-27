@@ -250,10 +250,9 @@ func (c *Client) SetImplicitWait(timeout time.Duration) error {
 		return fmt.Errorf("no active session")
 	}
 
-	_, err := c.request("POST", c.sessionPath("/timeouts"), map[string]interface{}{
-		"implicit": timeout.Milliseconds(),
+	return c.SetAppiumSettings(map[string]interface{}{
+		"implicitWait": timeout.Milliseconds(),
 	})
-	return err
 }
 
 // SetAppiumSettings configures Appium-specific settings.
