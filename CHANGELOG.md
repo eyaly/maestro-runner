@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `runFlow: when` conditions with variable expressions (e.g., `${output.element.id}`) were never expanded, causing conditions to always evaluate as false and silently skip conditional blocks
+- iOS real device: `acceptAlertButtonSelector` matched "Don't Allow" instead of "Allow" — `CONTAINS[c] 'Allow'` matched both buttons, causing WDA to reject permission dialogs. Changed to `BEGINSWITH[c] 'Allow'` with `OK` fallback for older iOS versions
 
 ## [1.0.7] - 2026-02-20
 

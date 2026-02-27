@@ -751,7 +751,7 @@ func (d *Driver) launchApp(step *flow.LaunchAppStep) *core.CommandResult {
 			"waitForIdleTimeout":      0,
 		}
 		if d.alertAction == "accept" {
-			sessionSettings["acceptAlertButtonSelector"] = "**/XCUIElementTypeButton[`label CONTAINS[c] 'Allow'`]"
+			sessionSettings["acceptAlertButtonSelector"] = "**/XCUIElementTypeButton[`label BEGINSWITH[c] 'Allow' OR label ==[c] 'OK'`]"
 		} else if d.alertAction == "dismiss" {
 			sessionSettings["dismissAlertButtonSelector"] = "**/XCUIElementTypeButton[`label CONTAINS[c] 'Don't Allow' OR label CONTAINS[c] 'Dont Allow'`]"
 		}
