@@ -133,6 +133,10 @@ Examples:
 			Value:   30,
 			EnvVars: []string{"MAESTRO_TYPING_FREQUENCY"},
 		},
+		&cli.BoolFlag{
+			Name:  "no-flutter-fallback",
+			Usage: "Disable automatic Flutter VM Service fallback",
+		},
 
 		// Emulator management flags (start-emulator, auto-start-emulator,
 		// shutdown-after, boot-timeout) are global flags defined in cli.go.
@@ -443,6 +447,9 @@ type RunConfig struct {
 	AutoStartEmulator bool   // Auto-start an emulator/simulator if no devices found
 	ShutdownAfter     bool   // Shutdown emulators/simulators started by maestro-runner after tests
 	BootTimeout       int    // Device boot timeout in seconds
+
+	// Flutter
+	NoFlutterFallback bool // Disable automatic Flutter VM Service fallback
 }
 
 func printBanner() {
@@ -610,6 +617,7 @@ func runTest(c *cli.Context) error {
 		AutoStartEmulator:  getBool("auto-start-emulator"),
 		ShutdownAfter:      getBool("shutdown-after"),
 		BootTimeout:        getInt("boot-timeout"),
+		NoFlutterFallback:  getBool("no-flutter-fallback"),
 	}
 
 	// Apply waitForIdleTimeout with priority:

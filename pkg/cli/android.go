@@ -13,6 +13,7 @@ import (
 	"github.com/devicelab-dev/maestro-runner/pkg/device"
 	devicelabdriver "github.com/devicelab-dev/maestro-runner/pkg/driver/devicelab"
 	uia2driver "github.com/devicelab-dev/maestro-runner/pkg/driver/uiautomator2"
+	"github.com/devicelab-dev/maestro-runner/pkg/flutter"
 	"github.com/devicelab-dev/maestro-runner/pkg/logger"
 	"github.com/devicelab-dev/maestro-runner/pkg/maestro"
 	"github.com/devicelab-dev/maestro-runner/pkg/uiautomator2"
@@ -92,16 +93,37 @@ func CreateAndroidDriver(cfg *RunConfig) (core.Driver, func(), error) {
 	}
 
 	// 4. Create driver based on type
+	var driver core.Driver
+	var cleanup func()
+
 	switch driverType {
 	case "uiautomator2":
-		return createUIAutomator2Driver(cfg, dev, info)
+		driver, cleanup, err = createUIAutomator2Driver(cfg, dev, info)
 	case "devicelab":
-		return createDeviceLabDriver(cfg, dev, info)
+		driver, cleanup, err = createDeviceLabDriver(cfg, dev, info)
 	case "appium":
 		return createAppiumDriver(cfg)
 	default:
 		return nil, nil, fmt.Errorf("unsupported driver: %s (use uiautomator2, devicelab, or appium)", driverType)
 	}
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// 5. Wrap driver with Flutter VM Service fallback (lazy connection)
+	if !cfg.NoFlutterFallback {
+		fw := flutter.Wrap(driver, nil, dev, cfg.AppID)
+		driver = fw
+		origCleanup := cleanup
+		cleanup = func() {
+			if fd, ok := fw.(*flutter.FlutterDriver); ok {
+				fd.Close()
+			}
+			origCleanup()
+		}
+	}
+
+	return driver, cleanup, nil
 }
 
 // createUIAutomator2Driver creates a direct UIAutomator2 driver (no Appium server needed).
