@@ -96,8 +96,13 @@ func (m *Manager) AllocatePort(avdName string) int {
 		occupied[port] = true
 	}
 
-	// Find next available port
+	// Find next available port starting after the highest allocated one
 	nextPort := startingPort
+	for _, p := range m.portMap {
+		if p >= nextPort {
+			nextPort = p + 2
+		}
+	}
 	for occupied[nextPort] {
 		nextPort += 2 // Even numbers only
 	}

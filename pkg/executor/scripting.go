@@ -369,6 +369,7 @@ func (se *ScriptEngine) ExecuteAssertCondition(ctx context.Context, step *flow.A
 	// Check visible condition
 	if cond.Visible != nil {
 		visibleStep := &flow.AssertVisibleStep{Selector: *cond.Visible}
+		visibleStep.TimeoutMs = conditionTimeout(cond, cond.Visible)
 		result := driver.Execute(visibleStep)
 		if !result.Success {
 			return &core.CommandResult{
@@ -382,6 +383,7 @@ func (se *ScriptEngine) ExecuteAssertCondition(ctx context.Context, step *flow.A
 	// Check notVisible condition
 	if cond.NotVisible != nil {
 		notVisibleStep := &flow.AssertNotVisibleStep{Selector: *cond.NotVisible}
+		notVisibleStep.TimeoutMs = conditionTimeout(cond, cond.NotVisible)
 		result := driver.Execute(notVisibleStep)
 		if !result.Success {
 			return &core.CommandResult{

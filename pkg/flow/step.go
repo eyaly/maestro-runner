@@ -1,6 +1,8 @@
 // Package flow handles parsing and representation of Maestro YAML flow files.
 package flow
 
+import "gopkg.in/yaml.v3"
+
 // StepType represents the type of step.
 type StepType string
 
@@ -280,9 +282,31 @@ type Condition struct {
 }
 
 // AssertConditionStep asserts a condition.
+// Uses a custom UnmarshalYAML because both BaseStep and Condition have a
+// "timeout" yaml tag — Condition.Timeout is the semantically correct one here
+// (controls how long to wait for visible/notVisible condition checks).
 type AssertConditionStep struct {
-	BaseStep  `yaml:",inline"`
+	BaseStep  `yaml:"-"`
 	Condition Condition `yaml:",inline"`
+}
+
+// UnmarshalYAML decodes AssertConditionStep, mapping "timeout" to Condition.Timeout
+// and "optional"/"label" to BaseStep fields without a duplicate-key conflict.
+func (s *AssertConditionStep) UnmarshalYAML(node *yaml.Node) error {
+	if err := node.Decode(&s.Condition); err != nil {
+		return err
+	}
+	type baseFields struct {
+		Optional  bool   `yaml:"optional"`
+		StepLabel string `yaml:"label"`
+	}
+	var b baseFields
+	if err := node.Decode(&b); err != nil {
+		return err
+	}
+	s.Optional = b.Optional
+	s.StepLabel = b.StepLabel
+	return nil
 }
 
 // AssertNoDefectsWithAIStep uses AI to check for visual defects.
