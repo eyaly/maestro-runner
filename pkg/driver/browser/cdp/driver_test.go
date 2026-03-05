@@ -2983,6 +2983,24 @@ func TestNeedsDownload(t *testing.T) {
 	}
 }
 
+// --- Tests for EnsureBrowser ---
+
+func TestEnsureBrowser_CustomBinSkipsDownload(t *testing.T) {
+	// When a custom ChromeBin is set, EnsureBrowser should return immediately
+	// without downloading anything.
+	err := EnsureBrowser(Config{ChromeBin: "/usr/bin/some-browser"})
+	if err != nil {
+		t.Errorf("expected no error for custom ChromeBin, got %v", err)
+	}
+}
+
+func TestEnsureBrowser_ChromeSkipsDownload(t *testing.T) {
+	// When Browser="chrome" and Chrome is installed, no download needed.
+	// When not installed, resolveBrowserBin returns "" so it would try to download.
+	// Either way, this should not panic.
+	_ = EnsureBrowser(Config{Browser: "chrome"})
+}
+
 // --- Tests for resolveBrowserBin ---
 
 func TestResolveBrowserBin(t *testing.T) {

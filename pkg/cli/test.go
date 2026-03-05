@@ -19,6 +19,7 @@ import (
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
 	"github.com/devicelab-dev/maestro-runner/pkg/device"
 	appiumdriver "github.com/devicelab-dev/maestro-runner/pkg/driver/appium"
+	cdpdriver "github.com/devicelab-dev/maestro-runner/pkg/driver/browser/cdp"
 	"github.com/devicelab-dev/maestro-runner/pkg/driver/mock"
 	wdadriver "github.com/devicelab-dev/maestro-runner/pkg/driver/wda"
 	"github.com/devicelab-dev/maestro-runner/pkg/emulator"
@@ -2044,6 +2045,11 @@ func createDeviceWorkers(cfg *RunConfig, deviceIDs []string, platform string) ([
 // createBrowserWorkers creates N browser driver workers for parallel web execution.
 // Each worker gets its own browser process with a separate profile for full isolation.
 func createBrowserWorkers(cfg *RunConfig, count int) ([]executor.DeviceWorker, error) {
+	// Ensure browser binary is downloaded once before launching N workers
+	if err := cdpdriver.EnsureBrowser(cdpdriver.Config{Browser: cfg.Browser}); err != nil {
+		return nil, fmt.Errorf("failed to ensure browser binary: %w", err)
+	}
+
 	var workers []executor.DeviceWorker
 	var cleanups []func()
 

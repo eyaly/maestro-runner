@@ -255,6 +255,30 @@ func resolveBrowserBin(cfg Config) string {
 	}
 }
 
+// EnsureBrowser ensures the browser binary is available, downloading Chromium
+// if needed. Call this once before creating multiple parallel drivers to avoid
+// N simultaneous downloads on first run.
+func EnsureBrowser(cfg Config) error {
+	if resolveBrowserBin(cfg) != "" {
+		return nil // using a local binary, no download needed
+	}
+
+	homeDir, _ := os.UserHomeDir()
+	if homeDir != "" {
+		launcher.DefaultBrowserDir = filepath.Join(homeDir, ".maestro-runner", "browsers")
+	}
+
+	b := launcher.NewBrowser()
+	b.RootDir = launcher.DefaultBrowserDir
+
+	if needsDownload(b.RootDir) {
+		log.Printf("[browser] Downloading Chromium (first time only, subsequent runs will be faster)...")
+	}
+
+	_, err := b.Get()
+	return err
+}
+
 // needsDownload checks if the browser cache directory is empty or missing.
 func needsDownload(browserDir string) bool {
 	entries, err := os.ReadDir(browserDir)
