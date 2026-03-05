@@ -312,6 +312,15 @@ func (fr *FlowRunner) executeStep(idx int, step flow.Step) (report.Status, strin
 		}
 		result = fr.driver.Execute(step)
 
+	// EvalBrowserScript - execute JS in browser, store output variable
+	case *flow.EvalBrowserScriptStep:
+		result = fr.driver.Execute(step)
+		if result.Success && s.Output != "" {
+			if val, ok := result.Data.(string); ok {
+				fr.script.SetVariable(s.Output, val)
+			}
+		}
+
 	// CopyTextFrom - delegate to driver and sync copied text to script engine
 	case *flow.CopyTextFromStep:
 		fr.script.ExpandStep(step) // Expand variables in selector
@@ -639,6 +648,14 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 				} else {
 					result.Message = fmt.Sprintf("Screenshot saved: %s", filepath.Base(path))
 				}
+			}
+		}
+	case *flow.EvalBrowserScriptStep:
+		fr.script.ExpandStep(step)
+		result = fr.driver.Execute(step)
+		if result.Success && s.Output != "" {
+			if val, ok := result.Data.(string); ok {
+				fr.script.SetVariable(s.Output, val)
 			}
 		}
 	case *flow.CopyTextFromStep:

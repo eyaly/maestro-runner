@@ -755,6 +755,33 @@ func randomEmail() string {
 	return randomString(8) + "@" + randomString(6) + ".com"
 }
 
+// evalBrowserScript executes JavaScript in the browser page context via CDP.
+// Returns the script's return value as a string in result.Data.
+func (d *Driver) evalBrowserScript(step *flow.EvalBrowserScriptStep) *core.CommandResult {
+	if step.Script == "" {
+		return errorResult(fmt.Errorf("evalBrowserScript: script is empty"), "")
+	}
+
+	// Pass as async arrow function — Rod wraps it via .apply(this, arguments)
+	// and Page.Eval sets AwaitPromise=true, so await works inside the script.
+	js := fmt.Sprintf("async () => { %s }", step.Script)
+
+	obj, err := d.page.Eval(js)
+	if err != nil {
+		return errorResult(fmt.Errorf("evalBrowserScript: %w", err), "")
+	}
+
+	// Convert result to string for variable storage
+	val := ""
+	if obj != nil && obj.Value.Val() != nil {
+		val = obj.Value.Str()
+	}
+
+	result := successResult("evalBrowserScript completed", nil)
+	result.Data = val
+	return result
+}
+
 var firstNames = []string{"Alice", "Bob", "Charlie", "Diana", "Eve", "Frank", "Grace", "Henry"}
 var lastNames = []string{"Smith", "Johnson", "Brown", "Taylor", "Wilson", "Davis", "Clark", "Lewis"}
 

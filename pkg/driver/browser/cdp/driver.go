@@ -389,6 +389,10 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	case *flow.DismissAlertStep:
 		result = d.dismissAlert(s)
 
+	// Browser scripting
+	case *flow.EvalBrowserScriptStep:
+		result = d.evalBrowserScript(s)
+
 	// Unsupported — mobile-only or not applicable to web
 	case *flow.SetAirplaneModeStep, *flow.ToggleAirplaneModeStep:
 		result = unsupportedResult("airplane mode is not supported on web platform")

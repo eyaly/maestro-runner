@@ -149,6 +149,8 @@ func TestParse_AllStepTypes(t *testing.T) {
 		{"runScript scalar", `- runScript: "console.log('hi')"`, StepRunScript},
 		{"runScript mapping", `- runScript: {script: "x=1"}`, StepRunScript},
 		{"evalScript", `- evalScript: "output.result = 42"`, StepEvalScript},
+		{"evalBrowserScript scalar", `- evalBrowserScript: "return document.title"`, StepEvalBrowserScript},
+		{"evalBrowserScript mapping", `- evalBrowserScript: {script: "return document.title", output: "pageTitle"}`, StepEvalBrowserScript},
 		{"takeScreenshot", `- takeScreenshot: "screen.png"`, StepTakeScreenshot},
 		{"startRecording", `- startRecording: "video.mp4"`, StepStartRecording},
 		{"stopRecording", `- stopRecording: "video.mp4"`, StepStopRecording},

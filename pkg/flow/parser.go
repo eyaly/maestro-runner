@@ -232,7 +232,7 @@ func isStepType(key string) bool {
 		StepLaunchApp, StepStopApp, StepKillApp, StepClearState, StepClearKeychain, StepSetPermissions,
 		StepSetLocation, StepSetOrientation, StepSetAirplaneMode, StepToggleAirplaneMode,
 		StepTravel, StepOpenLink, StepOpenBrowser, StepRepeat, StepRetry, StepRunFlow,
-		StepRunScript, StepEvalScript, StepTakeScreenshot, StepStartRecording,
+		StepRunScript, StepEvalScript, StepEvalBrowserScript, StepTakeScreenshot, StepStartRecording,
 		StepStopRecording, StepAddMedia, StepPressKey, StepWaitForAnimationToEnd,
 		StepDefineVariables:
 		return true
@@ -620,6 +620,16 @@ func decodeStep(stepType StepType, valueNode *yaml.Node, sourcePath string) (Ste
 			return nil, wrapParseError(sourcePath, valueNode.Line, err)
 		}
 		s.StepType = StepEvalScript
+		return &s, nil
+
+	case StepEvalBrowserScript:
+		var s EvalBrowserScriptStep
+		if valueNode.Kind == yaml.ScalarNode {
+			s.Script = valueNode.Value
+		} else if err := valueNode.Decode(&s); err != nil {
+			return nil, wrapParseError(sourcePath, valueNode.Line, err)
+		}
+		s.StepType = StepEvalBrowserScript
 		return &s, nil
 
 	case StepTakeScreenshot:

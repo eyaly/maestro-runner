@@ -670,6 +670,104 @@ func TestWaitForAnimationToEnd(t *testing.T) {
 	}
 }
 
+func TestEvalBrowserScript(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Return a value
+	result := d.Execute(&flow.EvalBrowserScriptStep{
+		BaseStep: flow.BaseStep{StepType: flow.StepEvalBrowserScript},
+		Script:   "return document.title",
+		Output:   "title",
+	})
+	if !result.Success {
+		t.Fatalf("expected success, got error: %v", result.Error)
+	}
+	if result.Data == nil {
+		t.Fatal("expected Data to contain return value")
+	}
+	title, ok := result.Data.(string)
+	if !ok {
+		t.Fatalf("expected Data to be string, got %T", result.Data)
+	}
+	if title == "" {
+		t.Error("expected non-empty document title")
+	}
+
+	// Manipulate DOM and verify
+	result = d.Execute(&flow.EvalBrowserScriptStep{
+		BaseStep: flow.BaseStep{StepType: flow.StepEvalBrowserScript},
+		Script:   `document.body.setAttribute("data-test", "hello"); return document.body.getAttribute("data-test")`,
+	})
+	if !result.Success {
+		t.Fatalf("expected success, got error: %v", result.Error)
+	}
+	if result.Data != "hello" {
+		t.Errorf("expected 'hello', got %q", result.Data)
+	}
+
+	// No script should fail
+	result = d.Execute(&flow.EvalBrowserScriptStep{
+		BaseStep: flow.BaseStep{StepType: flow.StepEvalBrowserScript},
+		Script:   "",
+	})
+	if result.Success {
+		t.Error("expected failure for empty script")
+	}
+
+	// Invalid JS should fail
+	result = d.Execute(&flow.EvalBrowserScriptStep{
+		BaseStep: flow.BaseStep{StepType: flow.StepEvalBrowserScript},
+		Script:   "return {{{invalid",
+	})
+	if result.Success {
+		t.Error("expected failure for invalid JS")
+	}
+}
+
+func TestEvalBrowserScriptAsync(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Async/await should work
+	result := d.Execute(&flow.EvalBrowserScriptStep{
+		BaseStep: flow.BaseStep{StepType: flow.StepEvalBrowserScript},
+		Script:   "const r = await Promise.resolve(42); return String(r)",
+	})
+	if !result.Success {
+		t.Fatalf("expected success, got error: %v", result.Error)
+	}
+	if result.Data != "42" {
+		t.Errorf("expected '42', got %q", result.Data)
+	}
+}
+
+func TestEvalBrowserScriptLocalStorage(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Write to localStorage
+	result := d.Execute(&flow.EvalBrowserScriptStep{
+		BaseStep: flow.BaseStep{StepType: flow.StepEvalBrowserScript},
+		Script:   `localStorage.setItem("key1", "value1"); return localStorage.getItem("key1")`,
+	})
+	if !result.Success {
+		t.Fatalf("expected success, got error: %v", result.Error)
+	}
+	if result.Data != "value1" {
+		t.Errorf("expected 'value1', got %q", result.Data)
+	}
+}
+
 func TestUnsupportedCommands(t *testing.T) {
 	ts := newTestServer()
 	defer ts.Close()
@@ -2904,14 +3002,14 @@ func TestLooksLikeRegex(t *testing.T) {
 		// Should NOT detect regex
 		{"Hello World", false},
 		{"simple text", false},
-		{"no.special", false},        // dot without quantifier
-		{"a.b", false},               // dot without quantifier
-		{"middle^caret", false},      // caret not at start
-		{"dollar$middle", false},     // dollar not at end
-		{"escaped\\.dot", false},     // escaped dot with quantifier (backslash prevents detection)
-		{"", false},                  // empty string
-		{"abc123", false},            // alphanumeric only
-		{"hello, world!", false},     // normal punctuation
+		{"no.special", false},    // dot without quantifier
+		{"a.b", false},           // dot without quantifier
+		{"middle^caret", false},  // caret not at start
+		{"dollar$middle", false}, // dollar not at end
+		{"escaped\\.dot", false}, // escaped dot with quantifier (backslash prevents detection)
+		{"", false},              // empty string
+		{"abc123", false},        // alphanumeric only
+		{"hello, world!", false}, // normal punctuation
 	}
 
 	for _, tt := range tests {

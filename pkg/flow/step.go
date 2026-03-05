@@ -61,11 +61,12 @@ const (
 	StepOpenBrowser        StepType = "openBrowser"
 
 	// Flow Control
-	StepRepeat     StepType = "repeat"
-	StepRetry      StepType = "retry"
-	StepRunFlow    StepType = "runFlow"
-	StepRunScript  StepType = "runScript"
-	StepEvalScript StepType = "evalScript"
+	StepRepeat            StepType = "repeat"
+	StepRetry             StepType = "retry"
+	StepRunFlow           StepType = "runFlow"
+	StepRunScript         StepType = "runScript"
+	StepEvalScript        StepType = "evalScript"
+	StepEvalBrowserScript StepType = "evalBrowserScript"
 
 	// Media
 	StepTakeScreenshot StepType = "takeScreenshot"
@@ -483,6 +484,15 @@ func (s *RunScriptStep) ScriptPath() string {
 type EvalScriptStep struct {
 	BaseStep `yaml:",inline"`
 	Script   string `yaml:"script"`
+}
+
+// EvalBrowserScriptStep executes JavaScript in the browser page context (web only).
+// Unlike EvalScriptStep which runs in Maestro's internal JS engine, this runs
+// directly in the browser via CDP, with access to window, document, DOM, etc.
+type EvalBrowserScriptStep struct {
+	BaseStep `yaml:",inline"`
+	Script   string `yaml:"script"` // JS code to execute in the browser
+	Output   string `yaml:"output"` // Variable name to store the return value
 }
 
 // ============================================
