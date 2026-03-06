@@ -233,6 +233,7 @@ func isStepType(key string) bool {
 		StepSetLocation, StepSetOrientation, StepSetAirplaneMode, StepToggleAirplaneMode,
 		StepTravel, StepOpenLink, StepOpenBrowser, StepRepeat, StepRetry, StepRunFlow,
 		StepRunScript, StepEvalScript, StepEvalBrowserScript,
+		StepRunBrowserScript, StepGetConsoleLogs, StepClearConsoleLogs, StepAssertNoJSErrors,
 		StepSetCookies, StepGetCookies, StepSaveAuthState, StepLoadAuthState,
 		StepUploadFile, StepWaitForDownload, StepGrantPermissions, StepResetPermissions,
 		StepOpenTab, StepSwitchTab, StepCloseTab,
@@ -635,6 +636,36 @@ func decodeStep(stepType StepType, valueNode *yaml.Node, sourcePath string) (Ste
 			return nil, wrapParseError(sourcePath, valueNode.Line, err)
 		}
 		s.StepType = StepEvalBrowserScript
+		return &s, nil
+
+	case StepRunBrowserScript:
+		var s RunBrowserScriptStep
+		if valueNode.Kind == yaml.ScalarNode {
+			s.File = valueNode.Value
+		} else if err := valueNode.Decode(&s); err != nil {
+			return nil, wrapParseError(sourcePath, valueNode.Line, err)
+		}
+		s.StepType = StepRunBrowserScript
+		return &s, nil
+
+	case StepGetConsoleLogs:
+		var s GetConsoleLogsStep
+		if valueNode.Kind == yaml.ScalarNode {
+			s.Output = valueNode.Value
+		} else if err := valueNode.Decode(&s); err != nil {
+			return nil, wrapParseError(sourcePath, valueNode.Line, err)
+		}
+		s.StepType = StepGetConsoleLogs
+		return &s, nil
+
+	case StepClearConsoleLogs:
+		var s ClearConsoleLogsStep
+		s.StepType = StepClearConsoleLogs
+		return &s, nil
+
+	case StepAssertNoJSErrors:
+		var s AssertNoJSErrorsStep
+		s.StepType = StepAssertNoJSErrors
 		return &s, nil
 
 	case StepSetCookies:

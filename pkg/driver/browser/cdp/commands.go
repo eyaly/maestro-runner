@@ -785,6 +785,85 @@ func (d *Driver) evalBrowserScript(step *flow.EvalBrowserScriptStep) *core.Comma
 	return result
 }
 
+// runBrowserScript loads a JS file and executes it in the browser page context.
+func (d *Driver) runBrowserScript(step *flow.RunBrowserScriptStep) *core.CommandResult {
+	if step.File == "" {
+		return errorResult(fmt.Errorf("runBrowserScript: file is required"), "")
+	}
+
+	data, err := os.ReadFile(step.File) //#nosec G304 -- user-provided script file
+	if err != nil {
+		return errorResult(fmt.Errorf("runBrowserScript: %w", err), "")
+	}
+
+	// Inject env vars as window.__env before running the script
+	var envSetup string
+	if len(step.Env) > 0 {
+		envJSON, _ := json.Marshal(step.Env)
+		envSetup = fmt.Sprintf("window.__env = %s;\n", envJSON)
+	}
+
+	js := fmt.Sprintf("async () => { %s%s }", envSetup, string(data))
+
+	obj, err := d.page.Eval(js)
+	if err != nil {
+		return errorResult(fmt.Errorf("runBrowserScript: %w", err), "")
+	}
+
+	val := ""
+	if obj != nil && obj.Value.Val() != nil {
+		val = obj.Value.Str()
+	}
+
+	result := successResult(fmt.Sprintf("Executed browser script: %s", filepath.Base(step.File)), nil)
+	result.Data = val
+	return result
+}
+
+// getConsoleLogs returns captured browser console logs as JSON.
+func (d *Driver) getConsoleLogs() *core.CommandResult {
+	logs := d.ConsoleLogs()
+
+	data, err := json.Marshal(logs)
+	if err != nil {
+		return errorResult(fmt.Errorf("getConsoleLogs: %w", err), "")
+	}
+
+	result := successResult(fmt.Sprintf("Got %d console log(s)", len(logs)), nil)
+	result.Data = string(data)
+	return result
+}
+
+// clearConsoleLogs clears captured browser console logs.
+func (d *Driver) clearConsoleLogs() *core.CommandResult {
+	d.consoleMu.Lock()
+	d.consoleLogs = nil
+	d.consoleMu.Unlock()
+	return successResult("Cleared console logs", nil)
+}
+
+// assertNoJSErrors asserts that no console errors or uncaught exceptions occurred.
+func (d *Driver) assertNoJSErrors() *core.CommandResult {
+	d.consoleMu.Lock()
+	defer d.consoleMu.Unlock()
+
+	var errors []string
+	for _, entry := range d.consoleLogs {
+		if entry.Level == "error" || entry.Level == "exception" {
+			errors = append(errors, fmt.Sprintf("[%s] %s", entry.Level, entry.Message))
+		}
+	}
+
+	if len(errors) > 0 {
+		return errorResult(
+			fmt.Errorf("%d JS error(s) detected", len(errors)),
+			strings.Join(errors, "\n"),
+		)
+	}
+
+	return successResult("No JS errors detected", nil)
+}
+
 // setCookies sets browser cookies via CDP.
 func (d *Driver) setCookies(step *flow.SetCookiesStep) *core.CommandResult {
 	if len(step.Cookies) == 0 {

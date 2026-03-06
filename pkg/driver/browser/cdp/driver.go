@@ -59,6 +59,10 @@ type Driver struct {
 	fetchEnabled  bool          // whether Fetch domain is enabled
 	networkMu     sync.Mutex    // protects mocks/blocks
 
+	// Console capture
+	consoleLogs []ConsoleEntry
+	consoleMu   sync.Mutex
+
 	// Selector validation dedup
 	warnedFields map[string]bool
 
@@ -154,8 +158,9 @@ func New(cfg Config) (*Driver, error) {
 		warnedFields:  make(map[string]bool),
 	}
 
-	// Start background dialog handler
+	// Start background handlers
 	d.startDialogHandler()
+	d.startConsoleHandler()
 
 	// Navigate to initial URL if provided
 	if cfg.URL != "" {
@@ -402,6 +407,16 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	// Browser scripting
 	case *flow.EvalBrowserScriptStep:
 		result = d.evalBrowserScript(s)
+	case *flow.RunBrowserScriptStep:
+		result = d.runBrowserScript(s)
+
+	// Console capture
+	case *flow.GetConsoleLogsStep:
+		result = d.getConsoleLogs()
+	case *flow.ClearConsoleLogsStep:
+		result = d.clearConsoleLogs()
+	case *flow.AssertNoJSErrorsStep:
+		result = d.assertNoJSErrors()
 
 	// Browser state (cookies, auth)
 	case *flow.SetCookiesStep:
@@ -551,4 +566,78 @@ func unsupportedResult(msg string) *core.CommandResult {
 		Error:   fmt.Errorf("%s", msg),
 		Message: msg,
 	}
+}
+
+// ConsoleEntry represents a captured browser console message or JS exception.
+type ConsoleEntry struct {
+	Level   string `json:"level"`   // "log", "warn", "error", "info", "exception"
+	Message string `json:"message"` // Console message text
+}
+
+// ConsoleLogs returns all captured console entries.
+func (d *Driver) ConsoleLogs() []ConsoleEntry {
+	d.consoleMu.Lock()
+	defer d.consoleMu.Unlock()
+	out := make([]ConsoleEntry, len(d.consoleLogs))
+	copy(out, d.consoleLogs)
+	return out
+}
+
+// startConsoleHandler starts a background goroutine to capture console.log/error/warn
+// and uncaught JS exceptions via the CDP Runtime domain.
+func (d *Driver) startConsoleHandler() {
+	if err := (proto.RuntimeEnable{}).Call(d.page); err != nil {
+		log.Printf("[browser] failed to enable Runtime domain: %v", err)
+		return
+	}
+
+	go d.page.EachEvent(func(e *proto.RuntimeConsoleAPICalled) bool {
+		level := string(e.Type)
+		msg := formatConsoleArgs(e.Args)
+
+		d.consoleMu.Lock()
+		d.consoleLogs = append(d.consoleLogs, ConsoleEntry{Level: level, Message: msg})
+		d.consoleMu.Unlock()
+
+		select {
+		case <-d.stopCh:
+			return true
+		default:
+			return false
+		}
+	}, func(e *proto.RuntimeExceptionThrown) bool {
+		msg := e.ExceptionDetails.Text
+		if e.ExceptionDetails.Exception != nil {
+			if desc := e.ExceptionDetails.Exception.Description; desc != "" {
+				msg = desc
+			}
+		}
+
+		d.consoleMu.Lock()
+		d.consoleLogs = append(d.consoleLogs, ConsoleEntry{Level: "exception", Message: msg})
+		d.consoleMu.Unlock()
+
+		select {
+		case <-d.stopCh:
+			return true
+		default:
+			return false
+		}
+	})()
+}
+
+// formatConsoleArgs converts RuntimeRemoteObject args to a readable string.
+func formatConsoleArgs(args []*proto.RuntimeRemoteObject) string {
+	parts := make([]string, 0, len(args))
+	for _, arg := range args {
+		switch {
+		case arg.Value.Str() != "":
+			parts = append(parts, arg.Value.Str())
+		case arg.Description != "":
+			parts = append(parts, arg.Description)
+		default:
+			parts = append(parts, arg.Value.String())
+		}
+	}
+	return strings.Join(parts, " ")
 }

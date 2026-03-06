@@ -67,6 +67,10 @@ const (
 	StepRunScript         StepType = "runScript"
 	StepEvalScript        StepType = "evalScript"
 	StepEvalBrowserScript StepType = "evalBrowserScript"
+	StepRunBrowserScript  StepType = "runBrowserScript"
+	StepGetConsoleLogs    StepType = "getConsoleLogs"
+	StepClearConsoleLogs  StepType = "clearConsoleLogs"
+	StepAssertNoJSErrors  StepType = "assertNoJSErrors"
 
 	// Browser State (web-only)
 	StepSetCookies    StepType = "setCookies"
@@ -517,6 +521,30 @@ type EvalBrowserScriptStep struct {
 	BaseStep `yaml:",inline"`
 	Script   string `yaml:"script"` // JS code to execute in the browser
 	Output   string `yaml:"output"` // Variable name to store the return value
+}
+
+// RunBrowserScriptStep loads and executes a JS file in the browser page context.
+type RunBrowserScriptStep struct {
+	BaseStep `yaml:",inline"`
+	File     string            `yaml:"file"`   // Path to JS file
+	Env      map[string]string `yaml:"env"`    // Environment variables injected as window.__env
+	Output   string            `yaml:"output"` // Variable name to store the return value
+}
+
+// GetConsoleLogsStep retrieves captured browser console logs as JSON.
+type GetConsoleLogsStep struct {
+	BaseStep `yaml:",inline"`
+	Output   string `yaml:"output"` // Variable name to store JSON result
+}
+
+// ClearConsoleLogsStep clears captured browser console logs.
+type ClearConsoleLogsStep struct {
+	BaseStep `yaml:",inline"`
+}
+
+// AssertNoJSErrorsStep asserts that no console errors or uncaught exceptions occurred.
+type AssertNoJSErrorsStep struct {
+	BaseStep `yaml:",inline"`
 }
 
 // ============================================

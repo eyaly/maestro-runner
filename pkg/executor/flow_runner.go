@@ -321,6 +321,25 @@ func (fr *FlowRunner) executeStep(idx int, step flow.Step) (report.Status, strin
 			}
 		}
 
+	// RunBrowserScript - execute JS file in browser, store output variable
+	case *flow.RunBrowserScriptStep:
+		fr.script.ExpandStep(step)
+		result = fr.driver.Execute(step)
+		if result.Success && s.Output != "" {
+			if val, ok := result.Data.(string); ok {
+				fr.script.SetVariable(s.Output, val)
+			}
+		}
+
+	// GetConsoleLogs - execute and store output variable
+	case *flow.GetConsoleLogsStep:
+		result = fr.driver.Execute(step)
+		if result.Success && s.Output != "" {
+			if val, ok := result.Data.(string); ok {
+				fr.script.SetVariable(s.Output, val)
+			}
+		}
+
 	// GetCookies - execute and store output variable
 	case *flow.GetCookiesStep:
 		result = fr.driver.Execute(step)
@@ -669,6 +688,22 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 			}
 		}
 	case *flow.EvalBrowserScriptStep:
+		fr.script.ExpandStep(step)
+		result = fr.driver.Execute(step)
+		if result.Success && s.Output != "" {
+			if val, ok := result.Data.(string); ok {
+				fr.script.SetVariable(s.Output, val)
+			}
+		}
+	case *flow.RunBrowserScriptStep:
+		fr.script.ExpandStep(step)
+		result = fr.driver.Execute(step)
+		if result.Success && s.Output != "" {
+			if val, ok := result.Data.(string); ok {
+				fr.script.SetVariable(s.Output, val)
+			}
+		}
+	case *flow.GetConsoleLogsStep:
 		fr.script.ExpandStep(step)
 		result = fr.driver.Execute(step)
 		if result.Success && s.Output != "" {

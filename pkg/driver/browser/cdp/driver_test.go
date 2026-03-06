@@ -1,10 +1,12 @@
 package cdp
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -4199,5 +4201,240 @@ func TestMockAndBlockCombined(t *testing.T) {
 	text = d.page.MustElement("#result").MustText()
 	if !strings.Contains(text, "ERROR") {
 		t.Errorf("expected /api/submit to be blocked, got: %s", text)
+	}
+}
+
+// ============================================
+// Console Capture & Script Execution Tests
+// ============================================
+
+func TestConsoleLogs(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Trigger console.log and console.error
+	d.page.MustEval(`() => {
+		console.log("hello from test");
+		console.error("something went wrong");
+		console.warn("this is a warning");
+	}`)
+	time.Sleep(300 * time.Millisecond)
+
+	logs := d.ConsoleLogs()
+	if len(logs) < 3 {
+		t.Fatalf("expected at least 3 console entries, got %d", len(logs))
+	}
+
+	// Check that we captured the entries
+	var foundLog, foundError, foundWarn bool
+	for _, entry := range logs {
+		if entry.Level == "log" && strings.Contains(entry.Message, "hello from test") {
+			foundLog = true
+		}
+		if entry.Level == "error" && strings.Contains(entry.Message, "something went wrong") {
+			foundError = true
+		}
+		if entry.Level == "warning" && strings.Contains(entry.Message, "this is a warning") {
+			foundWarn = true
+		}
+	}
+	if !foundLog {
+		t.Error("missing console.log entry")
+	}
+	if !foundError {
+		t.Error("missing console.error entry")
+	}
+	if !foundWarn {
+		t.Error("missing console.warn entry")
+	}
+}
+
+func TestConsoleException(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Trigger an uncaught exception via setTimeout (so it doesn't fail our eval)
+	d.page.MustEval(`() => {
+		setTimeout(() => { throw new Error("uncaught test error") }, 10);
+	}`)
+	time.Sleep(500 * time.Millisecond)
+
+	logs := d.ConsoleLogs()
+	var found bool
+	for _, entry := range logs {
+		if entry.Level == "exception" && strings.Contains(entry.Message, "uncaught test error") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected uncaught exception entry, got: %+v", logs)
+	}
+}
+
+func TestGetConsoleLogs(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	d.page.MustEval(`() => console.log("test message")`)
+	time.Sleep(300 * time.Millisecond)
+
+	result := d.getConsoleLogs()
+	if !result.Success {
+		t.Fatalf("getConsoleLogs failed: %s", result.Message)
+	}
+
+	var logs []ConsoleEntry
+	if err := json.Unmarshal([]byte(result.Data.(string)), &logs); err != nil {
+		t.Fatalf("failed to parse console logs JSON: %v", err)
+	}
+	if len(logs) == 0 {
+		t.Fatal("expected at least 1 console entry")
+	}
+}
+
+func TestClearConsoleLogs(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	d.page.MustEval(`() => console.log("before clear")`)
+	time.Sleep(300 * time.Millisecond)
+
+	if len(d.ConsoleLogs()) == 0 {
+		t.Fatal("expected console entries before clear")
+	}
+
+	result := d.clearConsoleLogs()
+	if !result.Success {
+		t.Fatalf("clearConsoleLogs failed: %s", result.Message)
+	}
+
+	if len(d.ConsoleLogs()) != 0 {
+		t.Errorf("expected 0 entries after clear, got %d", len(d.ConsoleLogs()))
+	}
+}
+
+func TestAssertNoJSErrors_Pass(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Only log and warn — no errors
+	d.page.MustEval(`() => {
+		console.log("info message");
+		console.warn("warning");
+	}`)
+	time.Sleep(300 * time.Millisecond)
+
+	result := d.assertNoJSErrors()
+	if !result.Success {
+		t.Fatalf("assertNoJSErrors should pass with no errors, got: %s", result.Message)
+	}
+}
+
+func TestAssertNoJSErrors_Fail(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	d.page.MustEval(`() => console.error("test error")`)
+	time.Sleep(300 * time.Millisecond)
+
+	result := d.assertNoJSErrors()
+	if result.Success {
+		t.Fatal("assertNoJSErrors should fail when console.error exists")
+	}
+	if !strings.Contains(result.Message, "test error") {
+		t.Errorf("expected error message in result, got: %s", result.Message)
+	}
+}
+
+func TestRunBrowserScript(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	// Create a temp JS file
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "test-script.js")
+	os.WriteFile(scriptPath, []byte(`return document.title;`), 0644)
+
+	result := d.runBrowserScript(&flow.RunBrowserScriptStep{
+		File: scriptPath,
+	})
+	if !result.Success {
+		t.Fatalf("runBrowserScript failed: %s (err: %v)", result.Message, result.Error)
+	}
+	if result.Data != "Test Page" {
+		t.Errorf("expected 'Test Page', got: %v", result.Data)
+	}
+}
+
+func TestRunBrowserScriptWithEnv(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "env-script.js")
+	os.WriteFile(scriptPath, []byte(`return window.__env.API_KEY;`), 0644)
+
+	result := d.runBrowserScript(&flow.RunBrowserScriptStep{
+		File: scriptPath,
+		Env:  map[string]string{"API_KEY": "secret123"},
+	})
+	if !result.Success {
+		t.Fatalf("runBrowserScript failed: %s", result.Message)
+	}
+	if result.Data != "secret123" {
+		t.Errorf("expected 'secret123', got: %v", result.Data)
+	}
+}
+
+func TestRunBrowserScriptEmptyFile(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.runBrowserScript(&flow.RunBrowserScriptStep{})
+	if result.Success {
+		t.Fatal("expected error for empty file")
+	}
+}
+
+func TestRunBrowserScriptMissingFile(t *testing.T) {
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	result := d.runBrowserScript(&flow.RunBrowserScriptStep{
+		File: "/nonexistent/script.js",
+	})
+	if result.Success {
+		t.Fatal("expected error for missing file")
 	}
 }
