@@ -198,6 +198,12 @@ func findIOSDevice() (string, error) {
 	return "", fmt.Errorf("no iOS device found (no booted simulator or connected physical device)")
 }
 
+// hasBootedSimulator returns true if any iOS simulator is currently booted.
+func hasBootedSimulator() bool {
+	_, err := findBootedSimulator()
+	return err == nil
+}
+
 // findBootedSimulator finds the UDID of a booted iOS simulator.
 func findBootedSimulator() (string, error) {
 	out, err := runCommand("xcrun", "simctl", "list", "devices", "booted", "-j")
