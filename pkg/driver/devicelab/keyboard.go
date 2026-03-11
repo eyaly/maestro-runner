@@ -12,32 +12,72 @@ import (
 
 // Patterns for extracting keyboard bounds from "dumpsys window InputMethod".
 var (
-	// Android <=12: "mFrame=[left,top][right,bottom]"
+	// Android <=12: "mFrame=[left,top][right,bottom]" (not present on Android 13+)
 	mFrameRegex = regexp.MustCompile(`mFrame=\[(\d+),(\d+)\]\[(\d+),(\d+)\]`)
 
-	// Android 13+: "touchable region=SkRegion((left,top,right,bottom))"
+	// "touchable region=SkRegion((left,top,right,bottom))" — present on all versions
+	// when the keyboard sets mTouchableInsets (stock keyboards do; some vendor keyboards don't).
 	touchableRegionRegex = regexp.MustCompile(`touchable region=SkRegion\(\((\d+),(\d+),(\d+),(\d+)\)\)`)
+
+	// "mGivenContentInsets=[left,top][right,bottom]" — tells us where keyboard content
+	// starts within the InputMethod window. The top inset is the transparent gap above
+	// the keyboard. Present on all versions.
+	contentInsetsRegex = regexp.MustCompile(`mGivenContentInsets=\[(\d+),(\d+)\]\[(\d+),(\d+)\]`)
 )
 
 // parseKeyboardFrame extracts keyboard bounds from "dumpsys window InputMethod" output.
-// Supports both Android <=12 (mFrame=) and Android 13+ (touchable region + isOnScreen) formats.
 // Returns nil if keyboard is not visible.
+//
+// Strategy order (verified against AOSP source for Android 10, 11, 13):
+//  1. touchable region — most accurate, gives actual keyboard area.
+//  2. mFrame + mGivenContentInsets — for vendor keyboards (Samsung, Xiaomi, etc.)
+//     that don't set touchable insets. Content insets reveal where keyboard starts.
+//  3. mFrame alone — only if the frame looks like a keyboard (not a full-screen window).
 func parseKeyboardFrame(dumpsysOutput string) *core.Bounds {
-	// Strategy 1: Android <=12 — look for mFrame=
-	if matches := mFrameRegex.FindStringSubmatch(dumpsysOutput); matches != nil {
-		return boundsFromMatches(matches)
-	}
-
-	// Strategy 2: Android 13+ — check isOnScreen + touchable region
-	if !strings.Contains(dumpsysOutput, "isOnScreen=true") {
+	// isOnScreen= is present on all Android versions (10+). mViewVisibility=0x8 means GONE.
+	if strings.Contains(dumpsysOutput, "isOnScreen=false") ||
+		strings.Contains(dumpsysOutput, "mViewVisibility=0x8") {
 		return nil
 	}
 
+	// Strategy 1: touchable region — the actual keyboard touchable area.
+	// Printed when mTouchableInsets != 0, which stock keyboards set but some vendor keyboards don't.
 	if matches := touchableRegionRegex.FindStringSubmatch(dumpsysOutput); matches != nil {
 		return boundsFromMatches(matches)
 	}
 
-	return nil
+	// Strategy 2+3: mFrame-based fallback (Android <=12 only; Android 13+ uses Frames: format).
+	frameMatches := mFrameRegex.FindStringSubmatch(dumpsysOutput)
+	if frameMatches == nil {
+		return nil
+	}
+	bounds := boundsFromMatches(frameMatches)
+	if bounds == nil {
+		return nil
+	}
+
+	// Strategy 2: adjust mFrame by content insets. mGivenContentInsets.top tells us how many
+	// pixels from the window top are transparent (not keyboard). This handles vendor keyboards
+	// that use a full-screen InputMethod window but report content insets correctly.
+	if insetsMatches := contentInsetsRegex.FindStringSubmatch(dumpsysOutput); insetsMatches != nil {
+		topInset, _ := strconv.Atoi(insetsMatches[2])
+		if topInset > 0 {
+			bounds.Y += topInset
+			bounds.Height -= topInset
+			if bounds.Height <= 0 {
+				return nil
+			}
+			return bounds
+		}
+	}
+
+	// Strategy 3: bare mFrame. Sanity check — a real keyboard is at most ~60% of screen height.
+	// If the frame is taller, it's the full InputMethod window, not the keyboard.
+	screenBottom := bounds.Y + bounds.Height
+	if screenBottom > 0 && bounds.Height > screenBottom*6/10 {
+		return nil
+	}
+	return bounds
 }
 
 // boundsFromMatches converts regex matches [_, left, top, right, bottom] to Bounds.

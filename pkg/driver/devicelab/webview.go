@@ -1,0 +1,726 @@
+package devicelab
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/devicelab-dev/maestro-runner/pkg/core"
+	"github.com/devicelab-dev/maestro-runner/pkg/flow"
+	"github.com/devicelab-dev/maestro-runner/pkg/logger"
+	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/cdp"
+	"github.com/go-rod/rod/lib/proto"
+)
+
+// CDPForwarder handles ADB socket forwarding for CDP connections.
+type CDPForwarder interface {
+	ForwardToAbstractSocket(localSocketPath, remoteSocketName string) error
+	ForwardTCPToAbstractSocket(localPort int, remoteSocketName string) error
+	RemoveSocketForward(socketPath string) error
+	RemoveTCPForward(localPort int) error
+	CDPSocketPath() string
+}
+
+// errConnectionDead signals that the CDP WebSocket connection is broken and needs cleanup.
+var errConnectionDead = fmt.Errorf("CDP connection dead")
+
+// webViewManager manages the Rod/CDP connection to an Android WebView.
+// It connects when a CDP socket becomes available and disconnects when it goes away.
+type webViewManager struct {
+	mu         sync.RWMutex
+	browser    *rod.Browser
+	page       *rod.Page
+	cdpType    string // "webview"
+	socketPath string // local forwarded socket path
+
+	forwarder CDPForwarder
+}
+
+func newWebViewManager(forwarder CDPForwarder) *webViewManager {
+	return &webViewManager{
+		forwarder: forwarder,
+	}
+}
+
+// connect establishes a Rod connection to the WebView's CDP socket.
+// Called when CDPTracker reports a socket is available.
+func (m *webViewManager) connect(cdpInfo *core.CDPInfo, cdpType string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Already connected to same socket
+	if m.page != nil && m.cdpType == cdpType {
+		return nil
+	}
+
+	// Disconnect previous connection if any
+	m.disconnectLocked()
+
+	return m.connectViaUnixSocket(cdpInfo, cdpType)
+}
+
+// connectViaUnixSocket uses ADB Unix socket forwarding with a custom dialer.
+func (m *webViewManager) connectViaUnixSocket(cdpInfo *core.CDPInfo, cdpType string) error {
+	socketPath := m.forwarder.CDPSocketPath()
+
+	// Step 4: ADB socket forwarding (local unix socket → device abstract socket)
+	logger.Info("[cdp:4-forward] setting up ADB forward: local=%s → device=%s", socketPath, cdpInfo.Socket)
+	if err := m.forwarder.ForwardToAbstractSocket(socketPath, cdpInfo.Socket); err != nil {
+		logger.Info("[cdp:4-forward] ADB forward failed: %v", err)
+		return fmt.Errorf("failed to forward CDP socket: %w", err)
+	}
+	logger.Info("[cdp:4-forward] ADB forward established: local=%s → device=%s", socketPath, cdpInfo.Socket)
+
+	// Step 5: CDP WebSocket connection via unix socket
+	connectCtx, connectCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer connectCancel()
+
+	ws := &cdp.WebSocket{
+		Dialer: &unixDialer{socketPath: socketPath},
+	}
+	logger.Info("[cdp:5-websocket] connecting CDP WebSocket via unix socket: %s", socketPath)
+	if err := ws.Connect(connectCtx, "ws://localhost/devtools/browser", nil); err != nil {
+		logger.Info("[cdp:5-websocket] CDP WebSocket connection failed: %v", err)
+		m.forwarder.RemoveSocketForward(socketPath)
+		os.Remove(socketPath)
+		return fmt.Errorf("failed to connect CDP WebSocket: %w", err)
+	}
+	logger.Info("[cdp:5-websocket] CDP WebSocket connected successfully")
+
+	// Step 6: Rod browser client + page acquisition
+	logger.Info("[cdp:6-browser] creating Rod browser client")
+	client := cdp.New().Start(ws)
+
+	browser := rod.New().Client(client).NoDefaultDevice()
+	if err := browser.Connect(); err != nil {
+		logger.Info("[cdp:6-browser] Rod browser connection failed: %v", err)
+		m.forwarder.RemoveSocketForward(socketPath)
+		os.Remove(socketPath)
+		return fmt.Errorf("failed to connect Rod browser: %w", err)
+	}
+
+	pages, err := browser.Pages()
+	if err != nil || len(pages) == 0 {
+		logger.Info("[cdp:6-browser] no pages found in WebView (err=%v)", err)
+		browser.Close()
+		m.forwarder.RemoveSocketForward(socketPath)
+		os.Remove(socketPath)
+		return fmt.Errorf("no pages found in WebView")
+	}
+
+	page := pages.First()
+	pageInfo, _ := page.Info()
+	pageURL := ""
+	if pageInfo != nil {
+		pageURL = pageInfo.URL
+	}
+	logger.Info("[cdp:6-browser] Rod browser connected, found %d page(s), active page: %s", len(pages), pageURL)
+
+	// Step 7: JS helper injection + ready
+	logger.Info("[cdp:7-ready] injecting JS helper into WebView")
+	if _, err := page.EvalOnNewDocument(webViewJSHelper); err != nil {
+		logger.Warn("[cdp:7-ready] failed to inject JS helper for future navigations: %v", err)
+	}
+	if _, err := page.Evaluate(rod.Eval(webViewJSHelper)); err != nil {
+		logger.Info("[cdp:7-ready] failed to inject JS helper into current page: %v", err)
+	}
+
+	m.browser = browser
+	m.page = page
+	m.cdpType = cdpType
+	m.socketPath = socketPath
+
+	logger.Info("[cdp:7-ready] WebView CDP connection ready — type=%s socket=%s page=%s", cdpType, cdpInfo.Socket, pageURL)
+	return nil
+}
+
+// disconnect closes the Rod connection and cleans up ADB forwarding.
+func (m *webViewManager) disconnect() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.disconnectLocked()
+}
+
+func (m *webViewManager) disconnectLocked() {
+	if m.browser != nil {
+		logger.Info("[cdp:disconnect] closing Rod browser (type=%s, socket=%s)", m.cdpType, m.socketPath)
+		m.browser.Close()
+		m.browser = nil
+	}
+	m.page = nil
+	if m.socketPath != "" {
+		logger.Info("[cdp:disconnect] removing ADB forward and cleaning up: %s", m.socketPath)
+		m.forwarder.RemoveSocketForward(m.socketPath)
+		os.Remove(m.socketPath)
+		m.socketPath = ""
+	}
+	m.cdpType = ""
+}
+
+// cleanup tears down the entire CDP connection — Rod browser, ADB forward, local socket.
+// Called when we detect the connection is dead (WebSocket broken, WebView destroyed, etc.)
+// so that ensureWebViewConnection can reconnect on the next find loop iteration.
+func (m *webViewManager) cleanup() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	socketPath := m.socketPath
+	cdpType := m.cdpType
+
+	if m.browser != nil {
+		logger.Info("[cdp:cleanup] closing Rod browser (type=%s)", cdpType)
+		m.browser.Close()
+		m.browser = nil
+	}
+	m.page = nil
+
+	if socketPath != "" {
+		logger.Info("[cdp:cleanup] removing ADB forward: %s", socketPath)
+		m.forwarder.RemoveSocketForward(socketPath)
+		logger.Info("[cdp:cleanup] removing local socket file: %s", socketPath)
+		os.Remove(socketPath)
+		m.socketPath = ""
+	}
+	m.cdpType = ""
+
+	logger.Info("[cdp:cleanup] full cleanup done — ready for reconnect")
+}
+
+// rodPage returns the current Rod page, or nil if not connected.
+func (m *webViewManager) rodPage() *rod.Page {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.page
+}
+
+// webViewType returns "browser", "webview", or "" if not connected.
+func (m *webViewManager) webViewType() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.cdpType
+}
+
+// isConnected returns true if Rod is connected to a WebView.
+func (m *webViewManager) isConnected() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.page != nil
+}
+
+// refreshPage re-acquires the active page from the browser connection.
+// Returns errConnectionDead if the browser connection is broken.
+func (m *webViewManager) refreshPage() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.browser == nil {
+		return errConnectionDead
+	}
+
+	browser := m.browser.Timeout(cdpCallTimeout)
+	pages, err := browser.Pages()
+	if err != nil {
+		// browser.Pages() failing means the CDP WebSocket is dead or unresponsive
+		return errConnectionDead
+	}
+	if len(pages) == 0 {
+		return fmt.Errorf("no pages found after refresh")
+	}
+
+	m.page = pages.First()
+
+	// Re-inject JS helper into the new page context
+	page := m.page.Timeout(cdpCallTimeout)
+	if _, err := page.Evaluate(rod.Eval(webViewJSHelper)); err != nil {
+		logger.Debug("[webview] failed to inject JS helper after page refresh: %v", err)
+	}
+
+	return nil
+}
+
+// visibilityCheckTimeout is a short timeout for the document.visibilityState check.
+// Must be fast — if the WebView can't answer this in 500ms, it's unresponsive.
+const visibilityCheckTimeout = 500 * time.Millisecond
+
+// isWebViewVisible checks if the WebView is actually visible on screen
+// by evaluating document.visibilityState via CDP. Returns false if hidden,
+// unresponsive, or the connection is dead.
+func (m *webViewManager) isWebViewVisible() bool {
+	page := m.rodPage()
+	if page == nil {
+		return false
+	}
+
+	result, err := page.Timeout(visibilityCheckTimeout).Eval(`() => document.visibilityState`)
+	if err != nil {
+		// Timeout or connection dead — treat as not visible
+		logger.Info("[cdp:visibility] check failed (unresponsive or dead): %v", err)
+		return false
+	}
+
+	state := result.Value.Str()
+	if state != "visible" {
+		logger.Info("[cdp:visibility] WebView not visible (state=%s), skipping CDP", state)
+		return false
+	}
+	return true
+}
+
+// findWebOnce performs a single attempt to find an element via Rod/CDP.
+// Skips CDP entirely if the WebView is not visible (background tab, fragment detached).
+// If the connection is dead (WebSocket broken), it cleans up everything
+// (Rod browser, ADB forward, local socket file) so the next ensureWebViewConnection
+// call can reconnect cleanly.
+func (m *webViewManager) findWebOnce(sel flow.Selector) (core.Element, error) {
+	// Quick visibility gate — if WebView is hidden (tab switched, fragment detached),
+	// skip all CDP work and let the caller fall through to native immediately.
+	if !m.isWebViewVisible() {
+		return nil, fmt.Errorf("webview not visible")
+	}
+
+	elem, err := m.findWebOnceInternal(sel)
+	if err == nil {
+		return elem, nil
+	}
+
+	logger.Debug("[webview] findWebOnce failed: %v, refreshing page...", err)
+
+	if refreshErr := m.refreshPage(); refreshErr != nil {
+		if refreshErr == errConnectionDead {
+			logger.Info("[cdp:cleanup] connection dead detected during find (find err: %v), cleaning up", err)
+			m.cleanup()
+			return nil, errConnectionDead
+		}
+		logger.Debug("[webview] refreshPage failed: %v", refreshErr)
+		return nil, err
+	}
+
+	page := m.rodPage()
+	if page != nil {
+		info, infoErr := page.Info()
+		if infoErr == nil {
+			logger.Debug("[webview] page after refresh: url=%s title=%s", info.URL, info.Title)
+		}
+	}
+
+	return m.findWebOnceInternal(sel)
+}
+
+// cdpCallTimeout is the maximum time any single CDP find attempt can take.
+// Prevents hangs when the WebView is suspended, doing heavy JS, or unresponsive.
+const cdpCallTimeout = 3 * time.Second
+
+// findWebOnceInternal performs a single attempt to find an element via Rod/CDP.
+// All Rod calls are bounded by cdpCallTimeout — no CDP call can hang indefinitely.
+func (m *webViewManager) findWebOnceInternal(sel flow.Selector) (core.Element, error) {
+	page := m.rodPage()
+	if page == nil {
+		return nil, fmt.Errorf("no CDP connection")
+	}
+
+	// Wrap page with timeout — all downstream Rod calls inherit this deadline.
+	// If the WebView is unresponsive (suspended, heavy JS, etc.), we bail out
+	// after cdpCallTimeout and fall through to native UiAutomator.
+	page = page.Timeout(cdpCallTimeout)
+
+	switch {
+	case sel.CSS != "":
+		return m.findByCSS(page, sel)
+	case sel.TestID != "":
+		return m.findByCSSSelector(page, fmt.Sprintf("[data-testid=%q]", sel.TestID))
+	case sel.Name != "":
+		return m.findByCSSSelector(page, fmt.Sprintf("[name=%q]", sel.Name))
+	case sel.Placeholder != "":
+		return m.findByCSSSelector(page, fmt.Sprintf("[placeholder=%q]", sel.Placeholder))
+	case sel.Href != "":
+		return m.findByCSSSelector(page, fmt.Sprintf("[href*=%q]", sel.Href))
+	case sel.Alt != "":
+		return m.findByCSSSelector(page, fmt.Sprintf("[alt=%q]", sel.Alt))
+	case sel.Title != "":
+		return m.findByCSSSelector(page, fmt.Sprintf("[title=%q]", sel.Title))
+	case sel.Role != "":
+		return m.findByAXTree(page, sel.Text, sel.Role)
+	case sel.ID != "":
+		return m.findByID(page, sel.ID)
+	case sel.Text != "":
+		return m.findByText(page, sel.Text)
+	case sel.TextContains != "":
+		return m.findByTextContains(page, sel.TextContains)
+	case sel.TextRegex != "":
+		return m.findByTextRegex(page, sel.TextRegex)
+	default:
+		return nil, fmt.Errorf("no web-compatible selector")
+	}
+}
+
+// findFocusedWeb returns the currently focused element in the WebView.
+// Cleans up if the connection is dead.
+func (m *webViewManager) findFocusedWeb() (core.Element, error) {
+	page := m.rodPage()
+	if page == nil {
+		return nil, fmt.Errorf("no CDP connection")
+	}
+
+	page = page.Timeout(cdpCallTimeout)
+
+	obj, err := page.Evaluate(rod.Eval(`() => {
+		const el = document.activeElement;
+		if (!el || el === document.body) return null;
+		return el;
+	}`).ByObject())
+	if err != nil {
+		// Check if connection is dead by trying refreshPage
+		if refreshErr := m.refreshPage(); refreshErr == errConnectionDead {
+			logger.Info("[cdp:cleanup] connection dead detected during findFocused, cleaning up")
+			m.cleanup()
+			return nil, errConnectionDead
+		}
+		return nil, fmt.Errorf("no focused web element: %w", err)
+	}
+
+	elem, err := page.ElementFromObject(obj)
+	if err != nil {
+		return nil, fmt.Errorf("focused element from object: %w", err)
+	}
+
+	visible, _ := elem.Visible()
+	if !visible {
+		return nil, fmt.Errorf("focused web element is not visible")
+	}
+
+	info := webElementInfo(elem)
+	return &WebElement{elem: elem, info: info}, nil
+}
+
+// ---- Internal finders (one-shot, no polling) ----
+
+func (m *webViewManager) findByCSS(page *rod.Page, sel flow.Selector) (core.Element, error) {
+	p := page.Sleeper(rod.NotFoundSleeper)
+	elem, err := p.Element(sel.CSS)
+	if err != nil {
+		return nil, fmt.Errorf("CSS '%s' not found: %w", sel.CSS, err)
+	}
+	visible, _ := elem.Visible()
+	if !visible {
+		return nil, fmt.Errorf("CSS '%s' found but not visible", sel.CSS)
+	}
+	info := webElementInfo(elem)
+	return &WebElement{elem: elem, info: info}, nil
+}
+
+func (m *webViewManager) findByCSSSelector(page *rod.Page, css string) (core.Element, error) {
+	p := page.Sleeper(rod.NotFoundSleeper)
+	elem, err := p.Element(css)
+	if err != nil {
+		return nil, fmt.Errorf("selector '%s' not found: %w", css, err)
+	}
+	visible, _ := elem.Visible()
+	if !visible {
+		return nil, fmt.Errorf("selector '%s' found but not visible", css)
+	}
+	info := webElementInfo(elem)
+	return &WebElement{elem: elem, info: info}, nil
+}
+
+func (m *webViewManager) findByID(page *rod.Page, id string) (core.Element, error) {
+	selectors := []string{
+		"#" + cssEscapeID(id),
+		fmt.Sprintf("[data-testid=%q]", id),
+		fmt.Sprintf("[id*=%q]", id),
+		fmt.Sprintf("[name=%q]", id),
+		fmt.Sprintf("[aria-label=%q]", id),
+	}
+
+	p := page.Sleeper(rod.NotFoundSleeper)
+	for _, css := range selectors {
+		elem, err := p.Element(css)
+		if err != nil {
+			continue
+		}
+		visible, _ := elem.Visible()
+		if !visible {
+			continue
+		}
+		info := webElementInfo(elem)
+		return &WebElement{elem: elem, info: info}, nil
+	}
+	return nil, fmt.Errorf("element with id '%s' not found", id)
+}
+
+// axRolePriority defines the priority order for AX tree node roles.
+// Lower value = higher priority. Clickable roles first, then input, then everything else.
+var axRolePriority = map[string]int{
+	// Clickable roles (highest priority)
+	"button": 1, "link": 1, "menuitem": 1, "tab": 1, "checkbox": 1, "radio": 1,
+	// Input roles
+	"textbox": 2, "combobox": 2, "searchbox": 2, "spinbutton": 2,
+}
+
+func (m *webViewManager) findByText(page *rod.Page, text string) (core.Element, error) {
+	// Single AX tree query (no role filter) — returns all nodes matching the name.
+	// We prioritize by role on the Go side: clickable > input > any.
+	if elem, err := m.findByAXTreePrioritized(page, text); err == nil {
+		return elem, nil
+	}
+
+	// JS fallback for elements not in AX tree
+	return m.findByJS(page, text)
+}
+
+// findByAXTreePrioritized queries the AX tree once without role filter,
+// then picks the best visible node by role priority (clickable > input > other).
+func (m *webViewManager) findByAXTreePrioritized(page *rod.Page, text string) (core.Element, error) {
+	body, err := page.Sleeper(rod.NotFoundSleeper).Element("body")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get body: %w", err)
+	}
+
+	query := &proto.AccessibilityQueryAXTree{
+		ObjectID:       body.Object.ObjectID,
+		AccessibleName: text,
+	}
+	result, err := query.Call(page)
+	if err != nil {
+		return nil, fmt.Errorf("AX tree query failed: %w", err)
+	}
+
+	// Resolve all visible nodes, track their roles
+	type candidate struct {
+		elem     *rod.Element
+		priority int
+	}
+	var candidates []candidate
+
+	for _, node := range result.Nodes {
+		if node.BackendDOMNodeID == 0 {
+			continue
+		}
+		resolve := &proto.DOMResolveNode{BackendNodeID: node.BackendDOMNodeID}
+		remote, err := resolve.Call(page)
+		if err != nil {
+			continue
+		}
+		elem, err := page.ElementFromObject(remote.Object)
+		if err != nil {
+			continue
+		}
+		visible, _ := elem.Visible()
+		if !visible {
+			continue
+		}
+
+		// Determine priority from role
+		pri := 3 // default: lowest priority
+		if node.Role != nil {
+			roleName := node.Role.Value.Str()
+			if p, found := axRolePriority[roleName]; found {
+				pri = p
+			}
+		}
+
+		// Priority 1 (clickable) — return immediately, can't do better
+		if pri == 1 {
+			info := webElementInfo(elem)
+			return &WebElement{elem: elem, info: info}, nil
+		}
+		candidates = append(candidates, candidate{elem: elem, priority: pri})
+	}
+
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no visible AX node for text '%s'", text)
+	}
+
+	// Pick the highest priority (lowest number) candidate
+	best := candidates[0]
+	for _, c := range candidates[1:] {
+		if c.priority < best.priority {
+			best = c
+		}
+	}
+	info := webElementInfo(best.elem)
+	return &WebElement{elem: best.elem, info: info}, nil
+}
+
+func (m *webViewManager) findByTextContains(page *rod.Page, text string) (core.Element, error) {
+	jsCode := `(text) => {
+		const all = document.querySelectorAll('*');
+		for (const el of all) {
+			if (el.children.length === 0 && el.textContent && el.textContent.includes(text)) {
+				return el;
+			}
+		}
+		return null;
+	}`
+	obj, err := page.Evaluate(rod.Eval(jsCode, text).ByObject())
+	if err != nil {
+		return nil, fmt.Errorf("textContains '%s' not found: %w", text, err)
+	}
+	elem, err := page.ElementFromObject(obj)
+	if err != nil {
+		return nil, fmt.Errorf("textContains '%s' element from object failed: %w", text, err)
+	}
+	visible, _ := elem.Visible()
+	if !visible {
+		return nil, fmt.Errorf("textContains '%s' found but not visible", text)
+	}
+	info := webElementInfo(elem)
+	return &WebElement{elem: elem, info: info}, nil
+}
+
+func (m *webViewManager) findByTextRegex(page *rod.Page, pattern string) (core.Element, error) {
+	jsCode := `(pattern) => {
+		const re = new RegExp(pattern);
+		const all = document.querySelectorAll('*');
+		for (const el of all) {
+			if (el.children.length === 0 && el.textContent && re.test(el.textContent)) {
+				return el;
+			}
+		}
+		return null;
+	}`
+	obj, err := page.Evaluate(rod.Eval(jsCode, pattern).ByObject())
+	if err != nil {
+		return nil, fmt.Errorf("textRegex '%s' not found: %w", pattern, err)
+	}
+	elem, err := page.ElementFromObject(obj)
+	if err != nil {
+		return nil, fmt.Errorf("textRegex '%s' element from object failed: %w", pattern, err)
+	}
+	visible, _ := elem.Visible()
+	if !visible {
+		return nil, fmt.Errorf("textRegex '%s' found but not visible", pattern)
+	}
+	info := webElementInfo(elem)
+	return &WebElement{elem: elem, info: info}, nil
+}
+
+func (m *webViewManager) findByAXTree(page *rod.Page, text, role string) (core.Element, error) {
+	body, err := page.Sleeper(rod.NotFoundSleeper).Element("body")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get body: %w", err)
+	}
+
+	query := &proto.AccessibilityQueryAXTree{
+		ObjectID:       body.Object.ObjectID,
+		AccessibleName: text,
+	}
+	if role != "" {
+		query.Role = role
+	}
+
+	result, err := query.Call(page)
+	if err != nil {
+		return nil, fmt.Errorf("AX tree query failed: %w", err)
+	}
+
+	for _, node := range result.Nodes {
+		if node.BackendDOMNodeID == 0 {
+			continue
+		}
+		resolve := &proto.DOMResolveNode{BackendNodeID: node.BackendDOMNodeID}
+		remote, err := resolve.Call(page)
+		if err != nil {
+			continue
+		}
+		elem, err := page.ElementFromObject(remote.Object)
+		if err != nil {
+			continue
+		}
+		visible, _ := elem.Visible()
+		if !visible {
+			continue
+		}
+		info := webElementInfo(elem)
+		return &WebElement{elem: elem, info: info}, nil
+	}
+
+	return nil, fmt.Errorf("no visible AX node for text '%s' role '%s'", text, role)
+}
+
+func (m *webViewManager) findByJS(page *rod.Page, text string) (core.Element, error) {
+	obj, err := page.Evaluate(rod.Eval(`(text) => window.__maestro.findByText(text)`, text).ByObject())
+	if err != nil {
+		return nil, fmt.Errorf("JS findByText failed: %w", err)
+	}
+	elem, err := page.ElementFromObject(obj)
+	if err != nil {
+		return nil, fmt.Errorf("JS findByText element from object failed: %w", err)
+	}
+	info := webElementInfo(elem)
+	return &WebElement{elem: elem, info: info}, nil
+}
+
+// cssEscapeID escapes an ID for CSS selector use.
+func cssEscapeID(s string) string {
+	var b strings.Builder
+	for _, c := range s {
+		switch {
+		case (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_':
+			b.WriteRune(c)
+		default:
+			b.WriteRune('\\')
+			b.WriteRune(c)
+		}
+	}
+	return b.String()
+}
+
+// freePort finds an available TCP port.
+func freePort() (int, error) {
+	l, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		return 0, err
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+	return port, nil
+}
+
+// unixDialer implements cdp.Dialer for Unix socket connections.
+type unixDialer struct {
+	socketPath string
+}
+
+func (d *unixDialer) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
+	var dialer net.Dialer
+	return dialer.DialContext(ctx, "unix", d.socketPath)
+}
+
+// webViewJSHelper is the JS helper injected into WebView pages.
+// This is intentionally a separate copy from the desktop browser CDP driver's jsHelperCode.
+// The two drivers (desktop browser vs mobile WebView) are independent — changes to
+// desktop browser JS should never affect mobile WebView behavior, and vice versa.
+const webViewJSHelper = `
+window.__maestro = {
+  findByText: function(text) {
+    var lower = text.toLowerCase();
+    var all = document.querySelectorAll('*');
+    var best = null, bestDepth = -1;
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      var t = (el.textContent || '').trim().toLowerCase();
+      var label = (el.getAttribute('aria-label') || '').toLowerCase();
+      var ph = (el.getAttribute('placeholder') || '').toLowerCase();
+      if (t.indexOf(lower) !== -1 || label.indexOf(lower) !== -1 || ph.indexOf(lower) !== -1) {
+        var d = 0, n = el;
+        while (n.parentElement) { d++; n = n.parentElement; }
+        if (d > bestDepth) { best = el; bestDepth = d; }
+      }
+    }
+    if (!best) throw new Error('not found: ' + text);
+    var p = best;
+    while (p && p !== document.body) {
+      var tag = p.tagName.toLowerCase();
+      if (['a','button','input','select','textarea'].indexOf(tag) !== -1 ||
+          p.getAttribute('role') === 'button' || p.getAttribute('tabindex') !== null) return p;
+      p = p.parentElement;
+    }
+    return best;
+  }
+};
+`

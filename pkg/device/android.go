@@ -293,6 +293,31 @@ func (d *AndroidDevice) RemoveSocketForward(socketPath string) error {
 	return err
 }
 
+// ForwardToAbstractSocket forwards a local Unix socket to a device abstract socket.
+// Used for CDP WebView connections: localfilesystem:/tmp/cdp-<serial>.sock → localabstract:<socket>
+func (d *AndroidDevice) ForwardToAbstractSocket(localSocketPath, remoteSocketName string) error {
+	_, err := d.adb("forward", fmt.Sprintf("localfilesystem:%s", localSocketPath), fmt.Sprintf("localabstract:%s", remoteSocketName))
+	return err
+}
+
+// ForwardTCPToAbstractSocket forwards a local TCP port to a device abstract socket.
+// Used for browser CDP connections: tcp:<port> → localabstract:<socket>
+func (d *AndroidDevice) ForwardTCPToAbstractSocket(localPort int, remoteSocketName string) error {
+	_, err := d.adb("forward", fmt.Sprintf("tcp:%d", localPort), fmt.Sprintf("localabstract:%s", remoteSocketName))
+	return err
+}
+
+// RemoveTCPForward removes a TCP port forward.
+func (d *AndroidDevice) RemoveTCPForward(localPort int) error {
+	_, err := d.adb("forward", "--remove", fmt.Sprintf("tcp:%d", localPort))
+	return err
+}
+
+// CDPSocketPath returns the local Unix socket path for CDP WebView forwarding.
+func (d *AndroidDevice) CDPSocketPath() string {
+	return fmt.Sprintf("/tmp/cdp-%s.sock", d.serial)
+}
+
 // DefaultSocketPath returns the default Unix socket path for this device.
 func (d *AndroidDevice) DefaultSocketPath() string {
 	return fmt.Sprintf("/tmp/uia2-%s.sock", d.serial)

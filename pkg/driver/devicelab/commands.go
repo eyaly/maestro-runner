@@ -51,6 +51,7 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 				}
 				return errorResult(ctx.Err(), fmt.Sprintf("Element not found: %v", ctx.Err()))
 			default:
+				d.ensureWebViewConnection()
 				for _, s := range strategies {
 					elem, err := d.client.FindAndClick(s.Strategy, s.Value)
 					if err == nil {
@@ -265,24 +266,37 @@ func (d *Driver) inputText(step *flow.InputTextStep) *core.CommandResult {
 		if err != nil {
 			return errorResult(err, fmt.Sprintf("Element not found: %v", err))
 		}
-		if err := elem.SendKeys(text); err != nil {
-			return errorResult(err, fmt.Sprintf("Failed to input text: %v", err))
-		}
-	} else {
-		active, err := d.client.ActiveElement()
-		if err != nil {
-			focusedTrue := true
-			focusedSel := flow.Selector{Focused: &focusedTrue}
-			elem, _, findErr := d.findElement(focusedSel, false, 2000)
-			if findErr != nil {
-				return errorResult(err, "No focused element to type into")
-			}
+		if elem != nil {
 			if err := elem.SendKeys(text); err != nil {
 				return errorResult(err, fmt.Sprintf("Failed to input text: %v", err))
 			}
-			return successResult(fmt.Sprintf("Entered text: %s%s", text, unicodeWarning), nil)
+		} else if d.webView != nil && d.webView.isConnected() {
+			// Web element was found by Rod during polling — re-find for interaction
+			webElem, webErr := d.webView.findWebOnce(step.Selector)
+			if webErr != nil {
+				return errorResult(webErr, "Web element found but cannot interact")
+			}
+			if inputErr := webElem.Input(text); inputErr != nil {
+				return errorResult(inputErr, fmt.Sprintf("Failed to input text: %v", inputErr))
+			}
 		}
-		if err := active.SendKeys(text); err != nil {
+	} else {
+		focused, err := d.findFocused()
+		if err != nil {
+			// Fallback: try finding by focused selector
+			focusedTrue := true
+			focusedSel := flow.Selector{Focused: &focusedTrue}
+			_, _, findErr := d.findElement(focusedSel, false, 2000)
+			if findErr != nil {
+				return errorResult(err, "No focused element to type into")
+			}
+			// Re-try findFocused after finding focused element
+			focused, err = d.findFocused()
+			if err != nil {
+				return errorResult(err, "No focused element to type into")
+			}
+		}
+		if err := focused.Input(text); err != nil {
 			return errorResult(err, fmt.Sprintf("Failed to input text: %v", err))
 		}
 	}
@@ -296,23 +310,24 @@ func (d *Driver) eraseText(step *flow.EraseTextStep) *core.CommandResult {
 		chars = 50
 	}
 
-	active, err := d.client.ActiveElement()
+	// Try using Element interface (supports both web and native)
+	focused, err := d.findFocused()
 	if err == nil {
-		currentText, textErr := active.Text()
+		currentText, textErr := focused.Text()
 		if textErr == nil {
 			textLen := len([]rune(currentText))
 
 			if chars >= textLen || textLen == 0 {
-				if clearErr := active.Clear(); clearErr == nil {
+				if clearErr := focused.Clear(); clearErr == nil {
 					return successResult(fmt.Sprintf("Cleared %d characters", textLen), nil)
 				}
 			} else {
 				runes := []rune(currentText)
 				remaining := string(runes[:textLen-chars])
 
-				if clearErr := active.Clear(); clearErr == nil {
+				if clearErr := focused.Clear(); clearErr == nil {
 					if remaining != "" {
-						if sendErr := active.SendKeys(remaining); sendErr == nil {
+						if sendErr := focused.Input(remaining); sendErr == nil {
 							return successResult(fmt.Sprintf("Erased %d characters", chars), nil)
 						}
 					} else {
@@ -323,6 +338,7 @@ func (d *Driver) eraseText(step *flow.EraseTextStep) *core.CommandResult {
 		}
 	}
 
+	// Fallback: delete key presses (native only)
 	for i := 0; i < chars; i++ {
 		if err := d.client.PressKeyCode(uiautomator2.KeyCodeDelete); err != nil {
 			return errorResult(err, fmt.Sprintf("Failed to erase text: %v", err))
@@ -358,11 +374,11 @@ func (d *Driver) inputRandom(step *flow.InputRandomStep) *core.CommandResult {
 		text = core.RandomString(length)
 	}
 
-	active, err := d.client.ActiveElement()
+	focused, err := d.findFocused()
 	if err != nil {
 		return errorResult(err, "No focused element to type into")
 	}
-	if err := active.SendKeys(text); err != nil {
+	if err := focused.Input(text); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to input text: %v", err))
 	}
 
@@ -1181,12 +1197,12 @@ func (d *Driver) pasteText(_ *flow.PasteTextStep) *core.CommandResult {
 		return errorResult(err, fmt.Sprintf("Failed to get clipboard: %v", err))
 	}
 
-	active, err := d.client.ActiveElement()
+	focused, err := d.findFocused()
 	if err != nil {
 		return errorResult(err, "No focused element to paste into")
 	}
 
-	if err := active.SendKeys(text); err != nil {
+	if err := focused.Input(text); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to paste text: %v", err))
 	}
 
