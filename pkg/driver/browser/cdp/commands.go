@@ -637,14 +637,23 @@ func (d *Driver) dismissAlert(step *flow.DismissAlertStep) *core.CommandResult {
 }
 
 // handleDialog accepts or dismisses the current JS dialog (shared by acceptAlert/dismissAlert).
+// Dialogs are auto-accepted by startDialogHandler to unblock CDP. If the dialog was already
+// auto-handled, we drain the channel and succeed — the explicit step is still meaningful
+// as documentation of intent.
 func (d *Driver) handleDialog(accept bool) *core.CommandResult {
 	err := proto.PageHandleJavaScriptDialog{Accept: accept}.Call(d.page)
 	if err != nil {
-		action := "accept"
-		if !accept {
-			action = "dismiss"
+		// Dialog may have been auto-handled — check if one was recently captured
+		select {
+		case <-d.dialogCh:
+			// Dialog existed and was auto-accepted
+		default:
+			action := "accept"
+			if !accept {
+				action = "dismiss"
+			}
+			return errorResult(err, fmt.Sprintf("No alert to %s", action))
 		}
-		return errorResult(err, fmt.Sprintf("No alert to %s", action))
 	}
 	if accept {
 		return successResult("Accepted alert", nil)

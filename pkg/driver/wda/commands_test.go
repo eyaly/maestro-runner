@@ -4589,3 +4589,222 @@ func TestScrollUntilVisibleRespectsTimeout(t *testing.T) {
 		t.Errorf("Expected timeout to limit scrolls (got %d, default max is 20)", scrollCount)
 	}
 }
+
+// =============================================================================
+// swipe direction case-insensitivity tests
+// =============================================================================
+
+// TestSwipeCaseInsensitiveDirection tests that swipe direction accepts mixed case.
+func TestSwipeCaseInsensitiveDirection(t *testing.T) {
+	directions := []string{"UP", "Up", "uP", "DOWN", "Down", "LEFT", "Left", "RIGHT", "Right"}
+
+	for _, dir := range directions {
+		t.Run(dir, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if strings.Contains(r.URL.Path, "/window/size") {
+					jsonResponse(w, map[string]interface{}{
+						"value": map[string]interface{}{"width": 390.0, "height": 844.0},
+					})
+					return
+				}
+				if strings.Contains(r.URL.Path, "/dragfromtoforduration") {
+					jsonResponse(w, map[string]interface{}{"status": 0})
+					return
+				}
+				jsonResponse(w, map[string]interface{}{"status": 0})
+			}))
+			defer server.Close()
+			driver := createTestDriver(server)
+
+			step := &flow.SwipeStep{Direction: dir}
+			result := driver.swipe(step)
+
+			if !result.Success {
+				t.Errorf("Swipe with direction %q should succeed, got: %s", dir, result.Message)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// terminateApp fallback tests
+// =============================================================================
+
+// TestTerminateAppWithSession tests terminateApp uses WDA when session exists.
+func TestTerminateAppWithSession(t *testing.T) {
+	var terminated bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/wda/apps/terminate") {
+			terminated = true
+			jsonResponse(w, map[string]interface{}{"status": 0})
+			return
+		}
+		jsonResponse(w, map[string]interface{}{"status": 0})
+	}))
+	defer server.Close()
+	driver := createTestDriver(server)
+
+	err := driver.terminateApp("com.test.app")
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if !terminated {
+		t.Error("Expected WDA TerminateApp to be called")
+	}
+}
+
+// TestTerminateAppNoSessionRealDevice tests terminateApp without session on real device succeeds silently.
+func TestTerminateAppNoSessionRealDevice(t *testing.T) {
+	client := &Client{
+		baseURL:    "http://localhost:0",
+		httpClient: http.DefaultClient,
+		// No sessionID — no session
+	}
+	info := &core.PlatformInfo{Platform: "ios", IsSimulator: false}
+	driver := NewDriver(client, info, "real-device-udid")
+
+	err := driver.terminateApp("com.test.app")
+	if err != nil {
+		t.Fatalf("Expected no error for real device without session, got: %v", err)
+	}
+}
+
+// TestStopAppEmptyBundleID tests stopApp with empty bundleID returns error.
+func TestStopAppEmptyBundleID(t *testing.T) {
+	driver := &Driver{
+		client: &Client{},
+		info:   &core.PlatformInfo{Platform: "ios"},
+	}
+
+	step := &flow.StopAppStep{AppID: ""}
+	result := driver.stopApp(step)
+
+	if result.Success {
+		t.Error("Expected failure for empty bundleID")
+	}
+}
+
+// =============================================================================
+// EnsureSession tests
+// =============================================================================
+
+// TestEnsureSessionCreatesSessionWhenNone tests EnsureSession creates a session.
+func TestEnsureSessionCreatesSessionWhenNone(t *testing.T) {
+	var sessionCreated bool
+	var settingsUpdated bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+
+		if path == "/session" && r.Method == "POST" {
+			sessionCreated = true
+			jsonResponse(w, map[string]interface{}{
+				"value": map[string]interface{}{"sessionId": "new-session"},
+			})
+			return
+		}
+		if strings.Contains(path, "/appium/settings") && r.Method == "POST" {
+			settingsUpdated = true
+			jsonResponse(w, map[string]interface{}{"status": 0})
+			return
+		}
+		jsonResponse(w, map[string]interface{}{"status": 0})
+	}))
+	defer server.Close()
+
+	client := &Client{baseURL: server.URL, httpClient: http.DefaultClient}
+	info := &core.PlatformInfo{Platform: "ios"}
+	driver := NewDriver(client, info, "")
+
+	err := driver.EnsureSession("com.test.app")
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if !sessionCreated {
+		t.Error("Expected session to be created")
+	}
+	if !settingsUpdated {
+		t.Error("Expected settings to be updated after session creation")
+	}
+}
+
+// TestEnsureSessionSkipsWhenSessionExists tests EnsureSession is a no-op when session exists.
+func TestEnsureSessionSkipsWhenSessionExists(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/session" && r.Method == "POST" {
+			t.Error("Should NOT create a new session when one exists")
+		}
+		jsonResponse(w, map[string]interface{}{"status": 0})
+	}))
+	defer server.Close()
+
+	// createTestDriver already sets sessionID
+	driver := createTestDriver(server)
+
+	err := driver.EnsureSession("com.test.app")
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+}
+
+// =============================================================================
+// launchApp session reuse with UpdateSettings test
+// =============================================================================
+
+// TestLaunchAppReusesExistingSession tests that launchApp reuses an existing session
+// and calls UpdateSettings to ensure alert config is correct.
+func TestLaunchAppReusesExistingSession(t *testing.T) {
+	var sessionCreated bool
+	var settingsUpdated bool
+	var launchCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+
+		if path == "/session" && r.Method == "POST" {
+			sessionCreated = true
+			jsonResponse(w, map[string]interface{}{
+				"value": map[string]interface{}{"sessionId": "new-session"},
+			})
+			return
+		}
+		if strings.Contains(path, "/appium/settings") && r.Method == "POST" {
+			settingsUpdated = true
+			jsonResponse(w, map[string]interface{}{"status": 0})
+			return
+		}
+		if strings.Contains(path, "/wda/apps/launch") {
+			launchCalled = true
+			jsonResponse(w, map[string]interface{}{"status": 0})
+			return
+		}
+		if strings.Contains(path, "/wda/apps/terminate") {
+			jsonResponse(w, map[string]interface{}{"status": 0})
+			return
+		}
+		jsonResponse(w, map[string]interface{}{"status": 0})
+	}))
+	defer server.Close()
+
+	// createTestDriver sets sessionID, simulating existing session
+	driver := createTestDriver(server)
+
+	step := &flow.LaunchAppStep{AppID: "com.test.app"}
+	result := driver.launchApp(step)
+
+	if !result.Success {
+		t.Fatalf("Expected success, got: %s", result.Message)
+	}
+	if sessionCreated {
+		t.Error("Should NOT create new session when one exists")
+	}
+	if !settingsUpdated {
+		t.Error("Expected UpdateSettings to be called for existing session")
+	}
+	if !launchCalled {
+		t.Error("Expected app launch to be called")
+	}
+}

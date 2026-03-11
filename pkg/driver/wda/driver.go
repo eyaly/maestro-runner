@@ -45,6 +45,24 @@ func NewDriver(client *Client, info *core.PlatformInfo, udid string) *Driver {
 	}
 }
 
+// EnsureSession creates a WDA session if one doesn't exist.
+// Called by the flow runner before execution starts when the flow has no launchApp step.
+// If launchApp runs later, it will replace this session.
+func (d *Driver) EnsureSession(appID string) error {
+	if d.client.HasSession() {
+		return nil
+	}
+	if err := d.client.CreateSession(appID, d.alertAction); err != nil {
+		return fmt.Errorf("failed to create WDA session: %w", err)
+	}
+	// Disable quiescence to prevent XCTest crashes
+	_ = d.client.UpdateSettings(map[string]interface{}{
+		"shouldWaitForQuiescence": false,
+		"waitForIdleTimeout":      0,
+	})
+	return nil
+}
+
 // screenSize returns cached screen dimensions from PlatformInfo.
 func (d *Driver) screenSize() (int, int, error) {
 	if d.info != nil && d.info.ScreenWidth > 0 && d.info.ScreenHeight > 0 {
@@ -98,7 +116,7 @@ func (d *Driver) SetTypingFrequency(freq int) error {
 
 // Element finding timeouts (milliseconds).
 const (
-	DefaultFindTimeout  = 17000 // 17 seconds for required elements
+	DefaultFindTimeout  = 12000 // 12 seconds for required elements
 	OptionalFindTimeout = 7000  // 7 seconds for optional elements
 	QuickFindTimeout    = 1000  // 1 second for quick checks
 )

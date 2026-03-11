@@ -95,13 +95,25 @@ func (fr *FlowRunner) Run() FlowResult {
 	}
 
 	// Apply typingFrequency with priority: Flow config > CLI flag > Default (0 = WDA default 60)
-	if configurer, ok := fr.driver.(core.TypingFrequencyConfigurer); ok {
+	if configurer, ok := core.Unwrap(fr.driver).(core.TypingFrequencyConfigurer); ok {
 		typingFrequency := fr.config.TypingFrequency
 		if fr.flow.Config.TypingFrequency != nil {
 			typingFrequency = *fr.flow.Config.TypingFrequency
 		}
 		if typingFrequency > 0 {
 			_ = configurer.SetTypingFrequency(typingFrequency)
+		}
+	}
+
+	// Ensure a WDA session exists before execution starts.
+	// If launchApp runs later, it reuses this session and updates settings.
+	// Use Unwrap to reach through wrapper layers (e.g. FlutterDriver).
+	if ensurer, ok := core.Unwrap(fr.driver).(core.SessionEnsurer); ok {
+		appID := fr.flow.Config.EffectiveAppID()
+		if appID != "" {
+			if err := ensurer.EnsureSession(appID); err != nil {
+				logger.Warn("failed to ensure session: %v", err)
+			}
 		}
 	}
 

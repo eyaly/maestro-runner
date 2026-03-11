@@ -173,10 +173,12 @@ func New(cfg Config) (*Driver, error) {
 	return d, nil
 }
 
-// startDialogHandler starts a background goroutine to capture dialog events.
+// startDialogHandler starts a background goroutine to capture and auto-dismiss dialog events.
+// Native JS dialogs (alert/confirm/prompt) block all CDP communication until handled.
 // Uses Rod's EachEvent pattern — the goroutine blocks until the browser closes.
 func (d *Driver) startDialogHandler() {
 	go d.page.EachEvent(func(e *proto.PageJavascriptDialogOpening) bool {
+		// Capture event for explicit acceptAlert/dismissAlert steps
 		select {
 		case d.dialogCh <- e:
 		default:
@@ -187,6 +189,14 @@ func (d *Driver) startDialogHandler() {
 			}
 			d.dialogCh <- e
 		}
+
+		// Auto-accept the dialog to unblock CDP communication.
+		// Tests can still use acceptAlert/dismissAlert for explicit handling.
+		err := proto.PageHandleJavaScriptDialog{Accept: true, PromptText: ""}.Call(d.page)
+		if err != nil {
+			log.Printf("[browser] failed to auto-dismiss dialog (%s): %v", e.Type, err)
+		}
+
 		return false // keep listening
 	})()
 }

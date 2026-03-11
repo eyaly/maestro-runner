@@ -199,6 +199,27 @@ type TypingFrequencyConfigurer interface {
 	SetTypingFrequency(freq int) error
 }
 
+// SessionEnsurer is an optional interface drivers can implement to create
+// a session before flow execution starts. This is needed when a flow has
+// no launchApp step (e.g. stopApp → openLink pattern) so that WDA commands
+// have an active session. If launchApp runs later, it replaces the session.
+type SessionEnsurer interface {
+	EnsureSession(appID string) error
+}
+
+// Unwrap returns the innermost driver, stripping any wrapper layers
+// (e.g. FlutterDriver). Use this to access optional interfaces that
+// wrappers may not forward.
+func Unwrap(d Driver) Driver {
+	for {
+		if u, ok := d.(interface{ Inner() Driver }); ok {
+			d = u.Inner()
+		} else {
+			return d
+		}
+	}
+}
+
 // LogEntry represents a single log message captured during execution
 type LogEntry struct {
 	Timestamp time.Time `json:"timestamp"`

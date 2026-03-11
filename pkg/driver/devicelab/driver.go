@@ -1188,7 +1188,7 @@ type LocatorStrategy struct {
 
 // Element finding timeouts (milliseconds).
 const (
-	DefaultFindTimeout  = 17000 // 17 seconds for required elements
+	DefaultFindTimeout  = 12000 // 12 seconds for required elements
 	OptionalFindTimeout = 7000  // 7 seconds for optional elements
 	QuickFindTimeout    = 1000  // 1 second for quick checks
 )

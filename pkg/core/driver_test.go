@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/devicelab-dev/maestro-runner/pkg/flow"
 )
 
 func TestBounds_Center(t *testing.T) {
@@ -272,6 +274,94 @@ func TestBounds_CenterInside(t *testing.T) {
 				t.Errorf("Bounds%+v.CenterInside(%+v) = %v, want %v", tt.inner, outer, got, tt.expected)
 			}
 		})
+	}
+}
+
+// --- Unwrap tests ---
+
+// stubDriver is a minimal Driver for testing Unwrap.
+type stubDriver struct{}
+
+func (s *stubDriver) Execute(step flow.Step) *CommandResult  { return nil }
+func (s *stubDriver) Screenshot() ([]byte, error)            { return nil, nil }
+func (s *stubDriver) Hierarchy() ([]byte, error)             { return nil, nil }
+func (s *stubDriver) GetState() *StateSnapshot               { return nil }
+func (s *stubDriver) GetPlatformInfo() *PlatformInfo         { return nil }
+func (s *stubDriver) SetFindTimeout(ms int)                  {}
+func (s *stubDriver) SetWaitForIdleTimeout(ms int) error     { return nil }
+
+// wrappingDriver wraps another driver and implements Inner().
+type wrappingDriver struct {
+	inner Driver
+}
+
+func (w *wrappingDriver) Execute(step flow.Step) *CommandResult  { return nil }
+func (w *wrappingDriver) Screenshot() ([]byte, error)            { return nil, nil }
+func (w *wrappingDriver) Hierarchy() ([]byte, error)             { return nil, nil }
+func (w *wrappingDriver) GetState() *StateSnapshot               { return nil }
+func (w *wrappingDriver) GetPlatformInfo() *PlatformInfo         { return nil }
+func (w *wrappingDriver) SetFindTimeout(ms int)                  {}
+func (w *wrappingDriver) SetWaitForIdleTimeout(ms int) error     { return nil }
+func (w *wrappingDriver) Inner() Driver                          { return w.inner }
+
+func TestUnwrap_NoWrapper(t *testing.T) {
+	d := &stubDriver{}
+	got := Unwrap(d)
+	if got != d {
+		t.Error("Unwrap on non-wrapper should return the same driver")
+	}
+}
+
+func TestUnwrap_SingleLayer(t *testing.T) {
+	inner := &stubDriver{}
+	wrapper := &wrappingDriver{inner: inner}
+	got := Unwrap(wrapper)
+	if got != inner {
+		t.Error("Unwrap should return the inner driver from a single wrapper")
+	}
+}
+
+func TestUnwrap_DoubleLayer(t *testing.T) {
+	innermost := &stubDriver{}
+	mid := &wrappingDriver{inner: innermost}
+	outer := &wrappingDriver{inner: mid}
+	got := Unwrap(outer)
+	if got != innermost {
+		t.Error("Unwrap should unwrap through multiple layers to the innermost driver")
+	}
+}
+
+// sessionEnsurerDriver is a driver that also implements SessionEnsurer.
+type sessionEnsurerDriver struct {
+	stubDriver
+	ensureCalled bool
+	lastAppID    string
+}
+
+func (s *sessionEnsurerDriver) EnsureSession(appID string) error {
+	s.ensureCalled = true
+	s.lastAppID = appID
+	return nil
+}
+
+func TestUnwrap_ExposesSessionEnsurer(t *testing.T) {
+	inner := &sessionEnsurerDriver{}
+	wrapper := &wrappingDriver{inner: inner}
+
+	unwrapped := Unwrap(wrapper)
+	ensurer, ok := unwrapped.(SessionEnsurer)
+	if !ok {
+		t.Fatal("Unwrap should expose SessionEnsurer from inner driver")
+	}
+
+	if err := ensurer.EnsureSession("com.example.app"); err != nil {
+		t.Fatalf("EnsureSession returned error: %v", err)
+	}
+	if !inner.ensureCalled {
+		t.Error("EnsureSession was not called on the inner driver")
+	}
+	if inner.lastAppID != "com.example.app" {
+		t.Errorf("EnsureSession appID = %q, want %q", inner.lastAppID, "com.example.app")
 	}
 }
 

@@ -576,3 +576,6 @@ func (d *FlutterDriver) DetectWebView() (*core.WebViewInfo, error) {
 	}
 	return nil, fmt.Errorf("inner driver does not support DetectWebView")
 }
+
+// Inner returns the underlying driver for optional interface access.
+func (d *FlutterDriver) Inner() core.Driver { return d.inner }

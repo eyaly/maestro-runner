@@ -517,6 +517,26 @@ func TestFlutterDriver_WidgetTreeFallback_NoMatch(t *testing.T) {
 	}
 }
 
+func TestFlutterDriver_Inner(t *testing.T) {
+	inner := &mockDriver{}
+	fd := &FlutterDriver{inner: inner}
+
+	got := fd.Inner()
+	if got != inner {
+		t.Error("Inner() should return the underlying driver")
+	}
+}
+
+func TestFlutterDriver_Inner_Unwrap(t *testing.T) {
+	inner := &mockDriver{}
+	fd := &FlutterDriver{inner: inner}
+
+	unwrapped := core.Unwrap(fd)
+	if unwrapped != inner {
+		t.Error("core.Unwrap on FlutterDriver should return the inner driver")
+	}
+}
+
 func TestIsElementFindingStep(t *testing.T) {
 	tests := []struct {
 		step flow.Step

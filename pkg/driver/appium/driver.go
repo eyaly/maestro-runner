@@ -14,7 +14,7 @@ import (
 )
 
 // DefaultFindTimeout is the default timeout for element operations.
-const DefaultFindTimeout = 10 * time.Second
+const DefaultFindTimeout = 12 * time.Second
 
 // Driver implements core.Driver using Appium server.
 type Driver struct {

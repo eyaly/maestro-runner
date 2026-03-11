@@ -2633,20 +2633,6 @@ func TestAssertNotVisibleWhenElementExists(t *testing.T) {
 	}
 }
 
-// TestStopAppEmptyBundleID tests stopApp with empty bundle ID
-func TestStopAppEmptyBundleID(t *testing.T) {
-	server := mockWDAServerForDriver()
-	defer server.Close()
-	driver := createTestDriver(server)
-
-	step := &flow.StopAppStep{AppID: ""}
-	result := driver.stopApp(step)
-
-	if result.Success {
-		t.Error("Expected failure for empty bundle ID")
-	}
-}
-
 // TestStopAppFails tests stopApp when terminate fails
 func TestStopAppFails(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

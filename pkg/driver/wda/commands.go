@@ -394,7 +394,8 @@ func (d *Driver) scroll(step *flow.ScrollStep) *core.CommandResult {
 	// "scroll down" means reveal content below, which requires swiping UP
 	// Maestro: ScrollDirection.DOWN -> SwipeDirection.UP
 	var fromX, fromY, toX, toY float64
-	switch step.Direction {
+	dir := strings.ToLower(step.Direction)
+	switch dir {
 	case "up":
 		// Scroll up = reveal top content = swipe DOWN
 		fromX, fromY = centerX, centerY-scrollDistance/2
@@ -510,7 +511,8 @@ func (d *Driver) swipe(step *flow.SwipeStep) *core.CommandResult {
 		centerY := areaY + areaH/2
 		swipeDistance := areaH / 3
 
-		switch step.Direction {
+		dir := strings.ToLower(step.Direction)
+		switch dir {
 		case "up":
 			fromX, fromY = centerX, centerY+swipeDistance/2
 			toX, toY = centerX, centerY-swipeDistance/2
@@ -612,7 +614,7 @@ func (d *Driver) launchApp(step *flow.LaunchAppStep) *core.CommandResult {
 	needPerms := d.udid != "" && d.info.IsSimulator && !hasAllValue(permissions, "unset")
 
 	if step.ClearState {
-		_ = d.client.TerminateApp(bundleID)
+		_ = d.terminateApp(bundleID)
 
 		if needPerms {
 			// Run uninstall+install and permission resets concurrently
@@ -745,27 +747,32 @@ func (d *Driver) launchApp(step *flow.LaunchAppStep) *core.CommandResult {
 	hasArgs := len(launchArgs) > 0 || len(launchEnv) > 0
 
 	// If no session exists, create one (which also launches the app)
+	newSession := false
 	if !d.client.HasSession() {
 		if err := d.client.CreateSession(bundleID, d.alertAction); err != nil {
 			return errorResult(err, fmt.Sprintf("Failed to create session for app: %s", bundleID))
 		}
-		// Single UpdateSettings call: disable quiescence (prevents XCTest crashes)
-		// and set alert button selectors for permission dialogs
-		sessionSettings := map[string]interface{}{
-			"shouldWaitForQuiescence": false,
-			"waitForIdleTimeout":      0,
-		}
-		if d.alertAction == "accept" {
-			sessionSettings["acceptAlertButtonSelector"] = "**/XCUIElementTypeButton[`label BEGINSWITH[c] 'Allow' OR label ==[c] 'OK'`]"
-		} else if d.alertAction == "dismiss" {
-			sessionSettings["dismissAlertButtonSelector"] = "**/XCUIElementTypeButton[`label CONTAINS[c] 'Don't Allow' OR label CONTAINS[c] 'Dont Allow'`]"
-		}
-		_ = d.client.UpdateSettings(sessionSettings)
-		// If no arguments/environment, the session creation already launched the app
-		if !hasArgs {
-			return successResult(fmt.Sprintf("Launched app: %s", bundleID), nil)
-		}
-		// Fall through to LaunchAppWithArgs to relaunch with arguments
+		newSession = true
+	}
+
+	// Always update settings — ensures alert config is correct even when
+	// reusing a session from a previous flow with different permissions.
+	sessionSettings := map[string]interface{}{
+		"shouldWaitForQuiescence": false,
+		"waitForIdleTimeout":      0,
+		"defaultAlertAction":      d.alertAction,
+	}
+	if d.alertAction == "accept" {
+		sessionSettings["acceptAlertButtonSelector"] = "**/XCUIElementTypeButton[`label BEGINSWITH[c] 'Allow' OR label ==[c] 'OK'`]"
+	} else if d.alertAction == "dismiss" {
+		sessionSettings["dismissAlertButtonSelector"] = "**/XCUIElementTypeButton[`label CONTAINS[c] 'Don't Allow' OR label CONTAINS[c] 'Dont Allow'`]"
+	}
+	_ = d.client.UpdateSettings(sessionSettings)
+
+	// If we just created a session and no args needed, we're done
+	// (CreateSession already launched the app)
+	if newSession && !hasArgs {
+		return successResult(fmt.Sprintf("Launched app: %s", bundleID), nil)
 	}
 
 	// Terminate the app first so WDA calls launch (not activate),
@@ -788,7 +795,7 @@ func (d *Driver) stopApp(step *flow.StopAppStep) *core.CommandResult {
 		return errorResult(fmt.Errorf("bundleID required"), "Bundle ID is required for stopApp")
 	}
 
-	if err := d.client.TerminateApp(bundleID); err != nil {
+	if err := d.terminateApp(bundleID); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to stop app: %s", bundleID))
 	}
 
@@ -801,11 +808,36 @@ func (d *Driver) killApp(step *flow.KillAppStep) *core.CommandResult {
 		return errorResult(fmt.Errorf("bundleID required"), "Bundle ID is required for killApp")
 	}
 
-	if err := d.client.TerminateApp(bundleID); err != nil {
+	if err := d.terminateApp(bundleID); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to kill app: %s", bundleID))
 	}
 
 	return successResult(fmt.Sprintf("Killed app: %s", bundleID), nil)
+}
+
+// terminateApp terminates an app via WDA session if available, otherwise falls back
+// to xcrun simctl terminate (simulators) or devicectl (real devices).
+// This handles the case where stopApp/killApp is called before any launchApp
+// (e.g. "- stopApp" as the first step in a flow).
+func (d *Driver) terminateApp(bundleID string) error {
+	if d.client.HasSession() {
+		return d.client.TerminateApp(bundleID)
+	}
+
+	// No WDA session — fall back to device-level terminate
+	if d.info != nil && d.info.IsSimulator {
+		cmd := exec.Command("xcrun", "simctl", "terminate", d.udid, bundleID)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			// Ignore errors — app might not be running
+			logger.Debug("simctl terminate %s: %v: %s", bundleID, err, string(output))
+		}
+		return nil
+	}
+
+	// Real device without session — nothing we can do, succeed silently.
+	// The next launchApp will create a session and handle it.
+	logger.Debug("no WDA session for terminateApp on real device, skipping")
+	return nil
 }
 
 func (d *Driver) clearState(step *flow.ClearStateStep) *core.CommandResult {
@@ -815,7 +847,7 @@ func (d *Driver) clearState(step *flow.ClearStateStep) *core.CommandResult {
 	}
 
 	// Terminate app first
-	_ = d.client.TerminateApp(bundleID)
+	_ = d.terminateApp(bundleID)
 
 	return d.clearAppState(bundleID)
 }
