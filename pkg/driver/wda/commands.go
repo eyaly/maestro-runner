@@ -539,7 +539,7 @@ func (d *Driver) swipe(step *flow.SwipeStep) *core.CommandResult {
 		}
 	}
 
-	duration := 0.3
+	duration := 0.1
 	if step.Duration > 0 {
 		duration = float64(step.Duration) / 1000.0
 	}
