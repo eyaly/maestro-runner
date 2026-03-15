@@ -2,8 +2,11 @@ package devicelab
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -61,6 +64,12 @@ func (m *webViewManager) connect(cdpInfo *core.CDPInfo, cdpType string) error {
 	// Disconnect previous connection if any
 	m.disconnectLocked()
 
+	// Chrome browser on Android: use HTTP /json + page-level WebSocket
+	// (browser-level Target.getTargets is unsupported on many mobile Chrome versions)
+	if cdpType == "browser" {
+		return m.connectBrowserViaHTTP(cdpInfo, cdpType)
+	}
+
 	return m.connectViaUnixSocket(cdpInfo, cdpType)
 }
 
@@ -92,19 +101,21 @@ func (m *webViewManager) connectViaUnixSocket(cdpInfo *core.CDPInfo, cdpType str
 	}
 	logger.Info("[cdp:5-websocket] CDP WebSocket connected successfully")
 
-	// Step 6: Rod browser client + page acquisition
+	// Step 6: Rod browser client + page acquisition (bounded by timeout)
 	logger.Info("[cdp:6-browser] creating Rod browser client")
 	client := cdp.New().Start(ws)
 
 	browser := rod.New().Client(client).NoDefaultDevice()
-	if err := browser.Connect(); err != nil {
+	// Use a temporary timeout for Connect + Pages — the browser object itself is long-lived
+	browserTimeout := browser.Timeout(10 * time.Second)
+	if err := browserTimeout.Connect(); err != nil {
 		logger.Info("[cdp:6-browser] Rod browser connection failed: %v", err)
 		m.forwarder.RemoveSocketForward(socketPath)
 		os.Remove(socketPath)
 		return fmt.Errorf("failed to connect Rod browser: %w", err)
 	}
 
-	pages, err := browser.Pages()
+	pages, err := browserTimeout.Pages()
 	if err != nil || len(pages) == 0 {
 		logger.Info("[cdp:6-browser] no pages found in WebView (err=%v)", err)
 		browser.Close()
@@ -137,6 +148,207 @@ func (m *webViewManager) connectViaUnixSocket(cdpInfo *core.CDPInfo, cdpType str
 
 	logger.Info("[cdp:7-ready] WebView CDP connection ready — type=%s socket=%s page=%s", cdpType, cdpInfo.Socket, pageURL)
 	return nil
+}
+
+// cdpTarget represents a Chrome DevTools Protocol target from /json endpoint.
+type cdpTarget struct {
+	ID                 string `json:"id"`
+	Type               string `json:"type"`
+	Title              string `json:"title"`
+	URL                string `json:"url"`
+	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+}
+
+// browserCDPClient wraps a cdp.Client for page-level Chrome Android connections.
+// Chrome on Android doesn't support Target.* commands at the browser level,
+// so we connect at the page level (/devtools/page/<id>) and intercept
+// Target.setDiscoverTargets and Target.attachToTarget to fake success.
+// All other commands pass through to the page directly (no session ID needed).
+type browserCDPClient struct {
+	*cdp.Client
+}
+
+func (c *browserCDPClient) Call(ctx context.Context, sessionID, method string, params interface{}) ([]byte, error) {
+	switch method {
+	case "Target.setDiscoverTargets":
+		return []byte(`{}`), nil
+	case "Target.attachToTarget":
+		// Return empty session ID — on a page-level connection, commands go directly
+		return []byte(`{"sessionId":""}`), nil
+	}
+	return c.Client.Call(ctx, sessionID, method, params)
+}
+
+// connectBrowserViaHTTP connects to Chrome browser using HTTP /json for page discovery.
+// Chrome on Android doesn't reliably support Target.setDiscoverTargets/getTargets at the
+// browser level, so we discover pages via the HTTP /json endpoint, then connect at the
+// browser level with a wrapped CDP client and use PageFromTarget with the known target ID.
+func (m *webViewManager) connectBrowserViaHTTP(cdpInfo *core.CDPInfo, cdpType string) error {
+	socketPath := m.forwarder.CDPSocketPath()
+
+	// Step 4: ADB socket forwarding
+	logger.Info("[cdp:4-forward] setting up ADB forward: local=%s → device=%s", socketPath, cdpInfo.Socket)
+	if err := m.forwarder.ForwardToAbstractSocket(socketPath, cdpInfo.Socket); err != nil {
+		logger.Info("[cdp:4-forward] ADB forward failed: %v", err)
+		return fmt.Errorf("failed to forward CDP socket: %w", err)
+	}
+	logger.Info("[cdp:4-forward] ADB forward established: local=%s → device=%s", socketPath, cdpInfo.Socket)
+
+	// Step 5: HTTP GET /json to discover page targets
+	logger.Info("[cdp:5-discover] fetching page targets via HTTP /json")
+	targets, err := m.fetchCDPTargets(socketPath)
+	if err != nil {
+		logger.Info("[cdp:5-discover] failed to fetch targets: %v", err)
+		m.forwarder.RemoveSocketForward(socketPath)
+		os.Remove(socketPath)
+		return fmt.Errorf("failed to fetch CDP targets: %w", err)
+	}
+
+	// Find the most recently created page target (highest ID = newest tab).
+	// Chrome returns targets in focus order, but after openLink there's a race
+	// where the old tab may still be focused. Using the highest ID is more reliable.
+	var pageTarget *cdpTarget
+	for i := range targets {
+		if targets[i].Type == "page" {
+			if pageTarget == nil || targets[i].ID > pageTarget.ID {
+				pageTarget = &targets[i]
+			}
+		}
+	}
+	if pageTarget == nil {
+		logger.Info("[cdp:5-discover] no page targets found in %d targets", len(targets))
+		m.forwarder.RemoveSocketForward(socketPath)
+		os.Remove(socketPath)
+		return fmt.Errorf("no page targets found")
+	}
+	logger.Info("[cdp:5-discover] found page target: id=%s title=%q url=%s", pageTarget.ID, pageTarget.Title, pageTarget.URL)
+
+	// Close all other tabs to prevent tab accumulation and stale connections.
+	// Each openLink creates a new Chrome tab; without cleanup, tabs pile up indefinitely.
+	m.closeOtherTabs(socketPath, targets, pageTarget.ID)
+
+	// Step 6: Connect WebSocket to PAGE-level endpoint (not browser level)
+	// Chrome on Android doesn't support Target.* commands at browser level.
+	connectCtx, connectCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer connectCancel()
+
+	pageWSPath := fmt.Sprintf("ws://localhost/devtools/page/%s", pageTarget.ID)
+	ws := &cdp.WebSocket{
+		Dialer: &unixDialer{socketPath: socketPath},
+	}
+	logger.Info("[cdp:6-websocket] connecting CDP WebSocket to page: %s", pageWSPath)
+	if err := ws.Connect(connectCtx, pageWSPath, nil); err != nil {
+		logger.Info("[cdp:6-websocket] page WebSocket connection failed: %v", err)
+		m.forwarder.RemoveSocketForward(socketPath)
+		os.Remove(socketPath)
+		return fmt.Errorf("failed to connect page WebSocket: %w", err)
+	}
+	logger.Info("[cdp:6-websocket] page WebSocket connected successfully")
+
+	// Step 7: Create Rod browser+page via wrapped CDP client
+	// The wrapper intercepts Target.* commands (unsupported on page-level connections)
+	// and returns fake responses so Rod's Connect() and PageFromTarget() succeed.
+	logger.Info("[cdp:7-browser] creating Rod browser+page (page-level CDP)")
+	rawClient := cdp.New().Start(ws)
+	wrappedClient := &browserCDPClient{Client: rawClient}
+	browser := rod.New().Client(wrappedClient).NoDefaultDevice()
+
+	if err := browser.Connect(); err != nil {
+		logger.Info("[cdp:7-browser] Rod browser connection failed: %v", err)
+		m.forwarder.RemoveSocketForward(socketPath)
+		os.Remove(socketPath)
+		return fmt.Errorf("failed to connect Rod browser: %w", err)
+	}
+
+	targetID := proto.TargetTargetID(pageTarget.ID)
+	page, err := browser.PageFromTarget(targetID)
+	if err != nil {
+		logger.Info("[cdp:7-browser] PageFromTarget failed: %v", err)
+		browser.Close()
+		m.forwarder.RemoveSocketForward(socketPath)
+		os.Remove(socketPath)
+		return fmt.Errorf("failed to create Rod page: %w", err)
+	}
+	logger.Info("[cdp:7-browser] Rod page created successfully")
+
+	// Step 8: Inject browser JS helper (dialog overrides + element finding + visibility + polling).
+	// Separate from webViewJSHelper (embedded WebViews) and desktop jsHelperCode.
+	logger.Info("[cdp:8-ready] injecting browser JS helper")
+	if _, err := page.EvalOnNewDocument(browserJSHelper); err != nil {
+		logger.Warn("[cdp:8-ready] failed to inject browser JS for future navigations: %v", err)
+	}
+	if _, err := page.Evaluate(rod.Eval(browserJSHelper)); err != nil {
+		logger.Info("[cdp:8-ready] failed to inject browser JS into current page: %v", err)
+	}
+
+	m.browser = browser
+	m.page = page
+	m.cdpType = cdpType
+	m.socketPath = socketPath
+
+	logger.Info("[cdp:8-ready] Browser CDP connection ready — type=%s socket=%s page=%s", cdpType, cdpInfo.Socket, pageTarget.URL)
+	return nil
+}
+
+// fetchCDPTargets fetches the list of CDP targets via HTTP /json over a Unix socket.
+func (m *webViewManager) fetchCDPTargets(socketPath string) ([]cdpTarget, error) {
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, "unix", socketPath)
+		},
+	}
+	httpClient := &http.Client{
+		Transport: transport,
+		Timeout:   5 * time.Second,
+	}
+
+	resp, err := httpClient.Get("http://localhost/json")
+	if err != nil {
+		return nil, fmt.Errorf("HTTP GET /json failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var targets []cdpTarget
+	if err := json.Unmarshal(body, &targets); err != nil {
+		return nil, fmt.Errorf("failed to parse targets JSON: %w", err)
+	}
+
+	return targets, nil
+}
+
+// closeOtherTabs closes all Chrome tabs except the one we're connecting to.
+// Uses HTTP /json/close/<id> via the forwarded Unix socket. Best-effort — errors are logged but ignored.
+func (m *webViewManager) closeOtherTabs(socketPath string, targets []cdpTarget, keepID string) {
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, "unix", socketPath)
+		},
+	}
+	httpClient := &http.Client{Transport: transport, Timeout: 2 * time.Second}
+
+	closed := 0
+	for _, t := range targets {
+		if t.ID == keepID || t.Type != "page" {
+			continue
+		}
+		resp, err := httpClient.Get(fmt.Sprintf("http://localhost/json/close/%s", t.ID))
+		if err != nil {
+			logger.Debug("[cdp:5-cleanup] failed to close tab %s: %v", t.ID, err)
+			continue
+		}
+		resp.Body.Close()
+		closed++
+	}
+	if closed > 0 {
+		logger.Info("[cdp:5-cleanup] closed %d old tab(s), keeping %s", closed, keepID)
+	}
 }
 
 // disconnect closes the Rod connection and cleans up ADB forwarding.
@@ -277,6 +489,13 @@ func (m *webViewManager) isWebViewVisible() bool {
 // (Rod browser, ADB forward, local socket file) so the next ensureWebViewConnection
 // call can reconnect cleanly.
 func (m *webViewManager) findWebOnce(sel flow.Selector) (core.Element, error) {
+	// Browser mode: skip visibility check and page refresh — we're connected
+	// directly at the page level and Chrome's visibilityState may report "hidden"
+	// even when the page is visible (background tab issue).
+	if m.webViewType() == "browser" {
+		return m.findWebOnceBrowser(sel)
+	}
+
 	// Quick visibility gate — if WebView is hidden (tab switched, fragment detached),
 	// skip all CDP work and let the caller fall through to native immediately.
 	if !m.isWebViewVisible() {
@@ -316,6 +535,84 @@ func (m *webViewManager) findWebOnce(sel flow.Selector) (core.Element, error) {
 	m.waitForPageReady()
 
 	return m.findWebOnceInternal(sel)
+}
+
+// findWebOnceBrowser performs element finding for Chrome browser mode.
+// Uses the injected __maestro.findVisible() JS helper for a single CDP roundtrip
+// with proper visibility checks. Falls back to findWebOnceInternal (AX tree + CSS).
+// On error, checks if connection is dead and cleans up.
+func (m *webViewManager) findWebOnceBrowser(sel flow.Selector) (core.Element, error) {
+	page := m.rodPage()
+	if page == nil {
+		return nil, fmt.Errorf("no CDP connection")
+	}
+
+	// Try JS helper first — single CDP roundtrip with visibility check.
+	selectorType, selectorValue := browserSelectorTypeValue(sel)
+	if selectorType != "" {
+		timedPage := page.Timeout(cdpCallTimeout)
+		obj, err := timedPage.Evaluate(
+			rod.Eval(`(type, value) => window.__maestro.findVisible(type, value)`,
+				selectorType, selectorValue).ByObject(),
+		)
+		if err == nil {
+			elem, err := timedPage.ElementFromObject(obj)
+			if err == nil {
+				info := webElementInfo(elem)
+				return &WebElement{elem: elem, info: info}, nil
+			}
+		}
+		logger.Debug("[cdp:browser] JS findVisible miss: %s — %v", sel.Describe(), err)
+	}
+
+	// Fallback to AX tree + CSS selectors (e.g. role-based queries)
+	elem, err := m.findWebOnceInternal(sel)
+	if err == nil {
+		return elem, nil
+	}
+	logger.Debug("[cdp:browser] findWebOnceInternal miss: %s — %v", sel.Describe(), err)
+
+	// Check if the error is a connection issue by trying a simple eval
+	if _, evalErr := page.Timeout(500 * time.Millisecond).Eval(`() => true`); evalErr != nil {
+		logger.Info("[cdp:browser] connection dead detected: %v", evalErr)
+		m.cleanup()
+		return nil, errConnectionDead
+	}
+
+	return nil, err
+}
+
+// browserSelectorTypeValue maps a flow.Selector to (type, value) for the
+// browser-side __maestro JS helper. Returns ("", "") for unsupported selectors.
+func browserSelectorTypeValue(sel flow.Selector) (string, string) {
+	switch {
+	case sel.CSS != "":
+		return "css", sel.CSS
+	case sel.TestID != "":
+		return "testId", sel.TestID
+	case sel.Name != "":
+		return "name", sel.Name
+	case sel.Placeholder != "":
+		return "placeholder", sel.Placeholder
+	case sel.Href != "":
+		return "href", sel.Href
+	case sel.Alt != "":
+		return "alt", sel.Alt
+	case sel.Title != "":
+		return "title", sel.Title
+	case sel.Role != "":
+		return "role", sel.Role
+	case sel.ID != "":
+		return "id", sel.ID
+	case sel.TextRegex != "":
+		return "textRegex", sel.TextRegex
+	case sel.TextContains != "":
+		return "textContains", sel.TextContains
+	case sel.Text != "":
+		return "text", sel.Text
+	default:
+		return "", ""
+	}
 }
 
 // waitForPageReady waits for document.readyState to be "complete" or "interactive".
@@ -717,6 +1014,209 @@ func (d *unixDialer) DialContext(ctx context.Context, _, _ string) (net.Conn, er
 	var dialer net.Dialer
 	return dialer.DialContext(ctx, "unix", d.socketPath)
 }
+
+// browserJSHelper is injected into Chrome browser pages on Android.
+// Separate copy from both the desktop browser driver's jsHelperCode and the mobile
+// webViewJSHelper. Includes dialog overrides (page-level CDP deadlocks on native dialogs)
+// and the full element-finding + visibility + polling helpers from the desktop driver.
+const browserJSHelper = `
+(function() {
+  // Override alert/confirm/prompt — on page-level Chrome Android CDP connections,
+  // a native dialog freezes ALL CDP commands including Page.handleJavaScriptDialog.
+  window.alert = function(msg) { console.log('[maestro] alert suppressed: ' + msg); };
+  window.confirm = function(msg) { console.log('[maestro] confirm suppressed: ' + msg); return true; };
+  window.prompt = function(msg, def) { console.log('[maestro] prompt suppressed: ' + msg); return def || ''; };
+
+window.__maestro = {
+  findByText: function(text) {
+    var lower = text.toLowerCase();
+    var all = document.querySelectorAll('*');
+    var best = null, bestDepth = -1;
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      var t = (el.textContent || '').trim().toLowerCase();
+      var label = (el.getAttribute('aria-label') || '').toLowerCase();
+      var ph = (el.getAttribute('placeholder') || '').toLowerCase();
+      if (t.indexOf(lower) !== -1 || label.indexOf(lower) !== -1 || ph.indexOf(lower) !== -1) {
+        var d = 0, n = el;
+        while (n.parentElement) { d++; n = n.parentElement; }
+        if (d > bestDepth) { best = el; bestDepth = d; }
+      }
+    }
+    if (!best) throw new Error('not found: ' + text);
+    var p = best;
+    while (p && p !== document.body) {
+      var tag = p.tagName.toLowerCase();
+      if (['a','button','input','select','textarea'].indexOf(tag) !== -1 ||
+          p.getAttribute('role') === 'button' || p.getAttribute('tabindex') !== null) return p;
+      p = p.parentElement;
+    }
+    return best;
+  },
+
+  _isElementVisible: function(el) {
+    if (!el || !el.isConnected) return false;
+    if (el.offsetParent === null) {
+      var style = window.getComputedStyle(el);
+      if (style.display === 'none') return false;
+      if (style.visibility === 'hidden') return false;
+      if (style.position !== 'fixed' && style.position !== 'sticky') {
+        var tag = el.tagName.toLowerCase();
+        if (tag !== 'body' && tag !== 'html') return false;
+      }
+    }
+    var rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return false;
+    var style = window.getComputedStyle(el);
+    if (style.visibility === 'hidden' || style.opacity === '0') return false;
+    return true;
+  },
+
+  _findMatchingElements: function(selectorType, selectorValue) {
+    var results = [];
+    switch (selectorType) {
+      case 'css':
+        try { results = Array.from(document.querySelectorAll(selectorValue)); } catch(e) {}
+        break;
+      case 'id':
+        var el = document.getElementById(selectorValue);
+        if (el) results = [el];
+        break;
+      case 'testId':
+        results = Array.from(document.querySelectorAll('[data-testid="' + selectorValue.replace(/"/g, '\\"') + '"]'));
+        break;
+      case 'placeholder':
+        results = Array.from(document.querySelectorAll('[placeholder="' + selectorValue.replace(/"/g, '\\"') + '"]'));
+        break;
+      case 'name':
+        results = Array.from(document.querySelectorAll('[name="' + selectorValue.replace(/"/g, '\\"') + '"]'));
+        break;
+      case 'href':
+        results = Array.from(document.querySelectorAll('a[href*="' + selectorValue.replace(/"/g, '\\"') + '"]'));
+        break;
+      case 'alt':
+        results = Array.from(document.querySelectorAll('[alt="' + selectorValue.replace(/"/g, '\\"') + '"]'));
+        break;
+      case 'title':
+        results = Array.from(document.querySelectorAll('[title="' + selectorValue.replace(/"/g, '\\"') + '"]'));
+        break;
+      case 'text': {
+        var lower = selectorValue.toLowerCase();
+        var all = document.querySelectorAll('*');
+        for (var i = 0; i < all.length; i++) {
+          var el = all[i];
+          var t = (el.textContent || '').trim().toLowerCase();
+          var label = (el.getAttribute('aria-label') || '').toLowerCase();
+          var ph = (el.getAttribute('placeholder') || '').toLowerCase();
+          if (t === lower || label === lower || ph === lower ||
+              t.indexOf(lower) !== -1 || label.indexOf(lower) !== -1 || ph.indexOf(lower) !== -1) {
+            results.push(el);
+          }
+        }
+        break;
+      }
+      case 'textContains': {
+        var lower = selectorValue.toLowerCase();
+        var all = document.querySelectorAll('*');
+        for (var i = 0; i < all.length; i++) {
+          var t = (all[i].textContent || '').trim().toLowerCase();
+          if (t.indexOf(lower) !== -1) results.push(all[i]);
+        }
+        break;
+      }
+      case 'textRegex': {
+        try {
+          var re = new RegExp(selectorValue, 'i');
+          var all = document.querySelectorAll('*');
+          for (var i = 0; i < all.length; i++) {
+            var t = (all[i].textContent || '').trim();
+            var label = all[i].getAttribute('aria-label') || '';
+            if (re.test(t) || re.test(label)) results.push(all[i]);
+          }
+        } catch(e) {}
+        break;
+      }
+      case 'role': {
+        var roleSelector = '[role="' + selectorValue.replace(/"/g, '\\"') + '"]';
+        results = Array.from(document.querySelectorAll(roleSelector));
+        break;
+      }
+    }
+    return results;
+  },
+
+  _isAnyVisible: function(selectorType, selectorValue) {
+    var self = this;
+    var elements = self._findMatchingElements(selectorType, selectorValue);
+    for (var i = 0; i < elements.length; i++) {
+      if (self._isElementVisible(elements[i])) return true;
+    }
+    return false;
+  },
+
+  // Find first visible element matching selector. Returns the element or null.
+  findVisible: function(selectorType, selectorValue) {
+    var self = this;
+    var elements = self._findMatchingElements(selectorType, selectorValue);
+    // Pick deepest visible element (most specific)
+    var best = null, bestDepth = -1;
+    for (var i = 0; i < elements.length; i++) {
+      if (!self._isElementVisible(elements[i])) continue;
+      var d = 0, n = elements[i];
+      while (n.parentElement) { d++; n = n.parentElement; }
+      if (d > bestDepth) { best = elements[i]; bestDepth = d; }
+    }
+    return best;
+  },
+
+  waitForNotVisible: function(selectorType, selectorValue, timeoutMs) {
+    var self = this;
+    return new Promise(function(resolve) {
+      var deadline = Date.now() + timeoutMs;
+      if (!self._isAnyVisible(selectorType, selectorValue)) {
+        resolve(true);
+        return;
+      }
+      function check() {
+        if (!self._isAnyVisible(selectorType, selectorValue)) {
+          resolve(true);
+          return;
+        }
+        if (Date.now() >= deadline) {
+          resolve(false);
+          return;
+        }
+        requestAnimationFrame(check);
+      }
+      requestAnimationFrame(check);
+    });
+  },
+
+  waitForVisible: function(selectorType, selectorValue, timeoutMs) {
+    var self = this;
+    return new Promise(function(resolve) {
+      var deadline = Date.now() + timeoutMs;
+      if (self._isAnyVisible(selectorType, selectorValue)) {
+        resolve(true);
+        return;
+      }
+      function check() {
+        if (self._isAnyVisible(selectorType, selectorValue)) {
+          resolve(true);
+          return;
+        }
+        if (Date.now() >= deadline) {
+          resolve(false);
+          return;
+        }
+        requestAnimationFrame(check);
+      }
+      requestAnimationFrame(check);
+    });
+  }
+};
+})();
+`
 
 // webViewJSHelper is the JS helper injected into WebView pages.
 // This is intentionally a separate copy from the desktop browser CDP driver's jsHelperCode.

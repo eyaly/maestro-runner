@@ -11,6 +11,8 @@ import (
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
 	"github.com/devicelab-dev/maestro-runner/pkg/logger"
 	"github.com/devicelab-dev/maestro-runner/pkg/uiautomator2"
+	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/input"
 )
 
 // ============================================================================
@@ -34,6 +36,11 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 	// single atomic Java call: find node + coordinate click at center.
 	// No stale nodes, no performAction, no parent walk-up.
 	if step.Selector.Text != "" && step.Point == "" && !step.Selector.HasRelativeSelector() {
+		// Browser mode: find via CDP and click via CDP
+		if d.isBrowserMode() {
+			return d.tapOnBrowser(step)
+		}
+
 		strategies, err := buildSelectors(step.Selector, 0)
 		if err != nil {
 			return errorResult(err, fmt.Sprintf("Failed to build selectors: %v", err))
@@ -52,6 +59,12 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 				return errorResult(ctx.Err(), fmt.Sprintf("Element not found: %v", ctx.Err()))
 			default:
 				d.ensureWebViewConnection()
+
+				// Re-check: browser mode may have been detected after ensureWebViewConnection
+				if d.isBrowserMode() {
+					return d.tapOnBrowser(step)
+				}
+
 				for _, s := range strategies {
 					elem, err := d.client.FindAndClick(s.Strategy, s.Value)
 					if err == nil {
@@ -71,6 +84,11 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 				}
 			}
 		}
+	}
+
+	// Browser mode: all selectors go through CDP find + CDP click
+	if d.isBrowserMode() {
+		return d.tapOnBrowser(step)
 	}
 
 	_, info, err := d.findElementForTap(step.Selector, step.IsOptional(), step.TimeoutMs)
@@ -104,6 +122,34 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 	}
 
 	return successResult("Tapped on element", info)
+}
+
+// tapOnBrowser handles tapOn entirely via CDP for Chrome browser mode.
+func (d *Driver) tapOnBrowser(step *flow.TapOnStep) *core.CommandResult {
+	timeout := d.calculateTimeout(step.IsOptional(), step.TimeoutMs)
+	deadline := time.Now().Add(timeout)
+
+	var lastErr error
+	for time.Now().Before(deadline) {
+		d.ensureWebViewConnection()
+		webElem, err := d.webView.findWebOnce(step.Selector)
+		if err == nil {
+			we, ok := webElem.(*WebElement)
+			if !ok {
+				return errorResult(fmt.Errorf("unexpected element type"), "Failed to tap via CDP")
+			}
+			if clickErr := we.Click(); clickErr != nil {
+				return errorResult(clickErr, "Failed to tap via CDP")
+			}
+			return successResult("Tapped on element", webElem.Info())
+		}
+		lastErr = err
+		time.Sleep(100 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return errorResult(fmt.Errorf("timeout: %w", lastErr), fmt.Sprintf("Element not found: %v", lastErr))
+	}
+	return errorResult(fmt.Errorf("element not found"), "Element not found")
 }
 
 // tapOnPointWithCoords handles point-based tap with either percentage or absolute coordinates.
@@ -204,6 +250,15 @@ func (d *Driver) assertVisible(step *flow.AssertVisibleStep) *core.CommandResult
 		return result
 	}
 
+	// Browser mode: use JS RAF-based polling (60fps in-browser, single CDP call).
+	if d.isBrowserMode() && d.webView != nil && d.webView.isConnected() {
+		timeout := step.TimeoutMs
+		if timeout <= 0 {
+			timeout = 5000
+		}
+		return d.assertVisibleBrowser(step.Selector, timeout)
+	}
+
 	_, info, err := d.findElementFast(step.Selector, step.IsOptional(), step.TimeoutMs)
 	if err != nil {
 		return errorResult(err, fmt.Sprintf("Element not visible: %v", err))
@@ -216,10 +271,45 @@ func (d *Driver) assertVisible(step *flow.AssertVisibleStep) *core.CommandResult
 	return errorResult(fmt.Errorf("element not visible"), "Element exists but is not visible")
 }
 
+// assertVisibleBrowser uses the injected __maestro.waitForVisible() JS helper.
+// RAF-based polling runs inside the browser at ~60fps — resolves within ~16ms of
+// element appearing, with a single CDP roundtrip.
+func (d *Driver) assertVisibleBrowser(sel flow.Selector, timeoutMs int) *core.CommandResult {
+	selectorType, selectorValue := browserSelectorTypeValue(sel)
+	desc := sel.DescribeQuoted()
+
+	page := d.webView.rodPage()
+	if page == nil {
+		return errorResult(fmt.Errorf("no CDP connection"), fmt.Sprintf("Element %s not visible: no CDP", desc))
+	}
+
+	result, err := page.Timeout(time.Duration(timeoutMs+1000) * time.Millisecond).Evaluate(
+		rod.Eval(`(type, value, timeout) => window.__maestro.waitForVisible(type, value, timeout)`,
+			selectorType, selectorValue, timeoutMs).ByPromise(),
+	)
+	if err != nil {
+		return errorResult(err, fmt.Sprintf("Element %s not visible: %v", desc, err))
+	}
+
+	if result.Value.Bool() {
+		return successResult(fmt.Sprintf("Element %s is visible", desc), nil)
+	}
+
+	return errorResult(
+		fmt.Errorf("element not visible within %dms", timeoutMs),
+		fmt.Sprintf("Element %s not visible within %dms", desc, timeoutMs),
+	)
+}
+
 func (d *Driver) assertNotVisible(step *flow.AssertNotVisibleStep) *core.CommandResult {
 	timeout := step.TimeoutMs
 	if timeout <= 0 {
 		timeout = 5000
+	}
+
+	// Browser mode: use JS RAF-based polling (60fps in-browser, single CDP call).
+	if d.isBrowserMode() && d.webView != nil && d.webView.isConnected() {
+		return d.assertNotVisibleBrowser(step.Selector, timeout)
 	}
 
 	deadline := time.Now().Add(time.Duration(timeout) * time.Millisecond)
@@ -239,6 +329,38 @@ func (d *Driver) assertNotVisible(step *flow.AssertNotVisibleStep) *core.Command
 	}
 }
 
+// assertNotVisibleBrowser uses the injected __maestro.waitForNotVisible() JS helper.
+// RAF-based polling runs inside the browser at ~60fps — resolves within ~16ms of
+// element disappearing, with a single CDP roundtrip.
+func (d *Driver) assertNotVisibleBrowser(sel flow.Selector, timeoutMs int) *core.CommandResult {
+	selectorType, selectorValue := browserSelectorTypeValue(sel)
+	desc := sel.DescribeQuoted()
+
+	page := d.webView.rodPage()
+	if page == nil {
+		// Fallback to native polling
+		return nil
+	}
+
+	result, err := page.Timeout(time.Duration(timeoutMs+1000) * time.Millisecond).Evaluate(
+		rod.Eval(`(type, value, timeout) => window.__maestro.waitForNotVisible(type, value, timeout)`,
+			selectorType, selectorValue, timeoutMs).ByPromise(),
+	)
+	if err != nil {
+		// JS evaluation failed (e.g. page navigated) — element is gone
+		return successResult(fmt.Sprintf("Element %s is not visible", desc), nil)
+	}
+
+	if result.Value.Bool() {
+		return successResult(fmt.Sprintf("Element %s is not visible", desc), nil)
+	}
+
+	return errorResult(
+		fmt.Errorf("element is still visible after %dms", timeoutMs),
+		fmt.Sprintf("Element %s is still visible", desc),
+	)
+}
+
 // ============================================================================
 // Input Commands
 // ============================================================================
@@ -252,6 +374,11 @@ func (d *Driver) inputText(step *flow.InputTextStep) *core.CommandResult {
 	unicodeWarning := ""
 	if core.HasNonASCII(text) {
 		unicodeWarning = " (warning: non-ASCII characters may not input correctly)"
+	}
+
+	// Browser mode: all input goes through CDP — native setText doesn't work for Chrome
+	if d.isBrowserMode() {
+		return d.inputTextBrowser(step, text, unicodeWarning)
 	}
 
 	if step.KeyPress {
@@ -304,10 +431,78 @@ func (d *Driver) inputText(step *flow.InputTextStep) *core.CommandResult {
 	return successResult(fmt.Sprintf("Entered text: %s%s", text, unicodeWarning), nil)
 }
 
+// inputTextBrowser handles inputText entirely via CDP for Chrome browser mode.
+// In browser mode, Selector.Text may be populated as a YAML parsing artifact
+// (InputTextStep.Text and Selector.Text share the yaml:"text" key via inline embedding).
+// We detect this and route to the focused-element path.
+func (d *Driver) inputTextBrowser(step *flow.InputTextStep, text, unicodeWarning string) *core.CommandResult {
+	// Detect YAML parsing artifact: Selector.Text == Text with no other selector fields.
+	// This means "type into focused element", not "find element by text then type".
+	hasSelectorArtifact := step.Selector.Text == step.Text &&
+		step.Selector.ID == "" && step.Selector.CSS == "" &&
+		step.Selector.TestID == "" && step.Selector.Name == "" &&
+		step.Selector.Placeholder == ""
+	selectorIsReal := !step.Selector.IsEmpty() && !hasSelectorArtifact
+
+	if selectorIsReal {
+		// Real selector: find element via CDP and type into it
+		timeout := d.calculateTimeout(step.IsOptional(), step.TimeoutMs)
+		deadline := time.Now().Add(timeout)
+		var webElem core.Element
+		var err error
+		for time.Now().Before(deadline) {
+			d.ensureWebViewConnection()
+			if d.webView.isConnected() {
+				webElem, err = d.webView.findWebOnce(step.Selector)
+				if err == nil {
+					break
+				}
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if webElem == nil {
+			if err != nil {
+				return errorResult(err, fmt.Sprintf("Element not found via CDP: %v", err))
+			}
+			return errorResult(fmt.Errorf("no CDP connection"), "No CDP connection for element input")
+		}
+		if inputErr := webElem.Input(text); inputErr != nil {
+			return errorResult(inputErr, fmt.Sprintf("Failed to input text via CDP: %v", inputErr))
+		}
+		return successResult(fmt.Sprintf("Entered text: %s%s", text, unicodeWarning), nil)
+	}
+
+	// No real selector: type into focused element via CDP keyboard
+	// Wait for CDP connection if not yet established
+	if !d.webView.isConnected() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			d.ensureWebViewConnection()
+			if d.webView.isConnected() {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	page := d.webView.rodPage()
+	if page == nil {
+		return errorResult(fmt.Errorf("no CDP connection"), "No CDP connection for text input")
+	}
+	if err := page.InsertText(text); err != nil {
+		return errorResult(err, fmt.Sprintf("Failed to input text via CDP: %v", err))
+	}
+	return successResult(fmt.Sprintf("Entered text: %s%s", text, unicodeWarning), nil)
+}
+
 func (d *Driver) eraseText(step *flow.EraseTextStep) *core.CommandResult {
 	chars := step.Characters
 	if chars <= 0 {
 		chars = 50
+	}
+
+	// Browser mode: use CDP keyboard for backspace
+	if d.isBrowserMode() {
+		return d.eraseTextBrowser(chars)
 	}
 
 	// Try using Element interface (supports both web and native)
@@ -345,6 +540,32 @@ func (d *Driver) eraseText(step *flow.EraseTextStep) *core.CommandResult {
 		}
 	}
 
+	return successResult(fmt.Sprintf("Erased %d characters", chars), nil)
+}
+
+// eraseTextBrowser handles eraseText via CDP keyboard backspace presses.
+func (d *Driver) eraseTextBrowser(chars int) *core.CommandResult {
+	// Wait for CDP connection if not yet established
+	if !d.webView.isConnected() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			d.ensureWebViewConnection()
+			if d.webView.isConnected() {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	page := d.webView.rodPage()
+	if page == nil {
+		return errorResult(fmt.Errorf("no CDP connection"), "No CDP connection for erase")
+	}
+	kb := page.Keyboard
+	for i := 0; i < chars; i++ {
+		if err := kb.Type(input.Backspace); err != nil {
+			return errorResult(err, fmt.Sprintf("Failed to erase text via CDP: %v", err))
+		}
+	}
 	return successResult(fmt.Sprintf("Erased %d characters", chars), nil)
 }
 
@@ -1302,6 +1523,17 @@ func (d *Driver) openLink(step *flow.OpenLinkStep) *core.CommandResult {
 		return errorResult(err, fmt.Sprintf("Failed to open link: %v", err))
 	}
 
+	// In browser mode, openLink opens a new Chrome tab. The old CDP page connection
+	// is now stale (points to the previous tab). Disconnect so ensureWebViewConnection()
+	// reconnects to the new page via HTTP /json on the next operation.
+	if d.isBrowserMode() && d.webView != nil {
+		logger.Info("[browser] openLink: disconnecting CDP to reconnect to new tab")
+		d.webView.disconnect()
+		// Keep knownCDPType — we're still in browser mode, just need a fresh page
+		// Give Chrome a moment to register the new tab
+		time.Sleep(500 * time.Millisecond)
+	}
+
 	if step.AutoVerify != nil && *step.AutoVerify {
 		time.Sleep(2 * time.Second)
 	}
@@ -1404,13 +1636,10 @@ func (d *Driver) stopRecording(_ *flow.StopRecordingStep) *core.CommandResult {
 // ============================================================================
 
 func (d *Driver) waitUntil(step *flow.WaitUntilStep) *core.CommandResult {
-	timeout := 30 * time.Second
+	timeoutMs := 30000
 	if step.TimeoutMs > 0 {
-		timeout = time.Duration(step.TimeoutMs) * time.Millisecond
+		timeoutMs = step.TimeoutMs
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
 
 	var selector *flow.Selector
 	waitingForVisible := step.Visible != nil
@@ -1419,6 +1648,18 @@ func (d *Driver) waitUntil(step *flow.WaitUntilStep) *core.CommandResult {
 	} else {
 		selector = step.NotVisible
 	}
+
+	// Browser mode: use JS RAF-based polling (60fps in-browser, single CDP call).
+	if d.isBrowserMode() && d.webView != nil && d.webView.isConnected() {
+		if waitingForVisible {
+			return d.assertVisibleBrowser(*selector, timeoutMs)
+		}
+		return d.assertNotVisibleBrowser(*selector, timeoutMs)
+	}
+
+	timeout := time.Duration(timeoutMs) * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
 	for {
 		select {

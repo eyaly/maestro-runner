@@ -5,6 +5,7 @@ import (
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/proto"
 )
 
 // WebElement wraps a Rod element to implement core.Element.
@@ -18,6 +19,9 @@ func (w *WebElement) Info() *core.ElementInfo { return w.info }
 func (w *WebElement) Text() (string, error) { return w.elem.Text() }
 
 func (w *WebElement) Input(text string) error { return w.elem.Input(text) }
+
+// Click performs a CDP click on the element (used for browser mode).
+func (w *WebElement) Click() error { return w.elem.Click(proto.InputMouseButtonLeft, 1) }
 
 func (w *WebElement) Clear() error {
 	_, err := w.elem.Eval(`() => { this.value = ''; this.dispatchEvent(new Event('input')); }`)
