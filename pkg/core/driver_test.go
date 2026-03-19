@@ -251,6 +251,41 @@ func TestHasNonASCII(t *testing.T) {
 	}
 }
 
+func TestBounds_VisiblePercentage(t *testing.T) {
+	screenW, screenH := 1080, 1920
+
+	tests := []struct {
+		name     string
+		bounds   Bounds
+		expected float64
+	}{
+		{"fully on-screen", Bounds{X: 100, Y: 100, Width: 200, Height: 200}, 1.0},
+		{"fully off-screen right", Bounds{X: 1100, Y: 100, Width: 200, Height: 200}, 0.0},
+		{"fully off-screen below", Bounds{X: 100, Y: 2000, Width: 200, Height: 200}, 0.0},
+		{"fully off-screen left", Bounds{X: -300, Y: 100, Width: 200, Height: 200}, 0.0},
+		{"fully off-screen above", Bounds{X: 100, Y: -300, Width: 200, Height: 200}, 0.0},
+		{"half off-screen right", Bounds{X: 980, Y: 100, Width: 200, Height: 200}, 0.5},
+		{"half off-screen bottom", Bounds{X: 100, Y: 1820, Width: 200, Height: 200}, 0.5},
+		{"zero-size element", Bounds{X: 100, Y: 100, Width: 0, Height: 0}, 0.0},
+		{"zero-width element", Bounds{X: 100, Y: 100, Width: 0, Height: 200}, 0.0},
+		{"full-screen overlay", Bounds{X: 0, Y: 0, Width: 1080, Height: 1920}, 1.0},
+		{"full-screen overlay with negative origin", Bounds{X: -10, Y: -10, Width: 1100, Height: 1940}, 1.0},
+		{"exactly 10% visible", Bounds{X: 1060, Y: 100, Width: 200, Height: 200}, 0.10},
+		{"barely visible (<10%)", Bounds{X: 1070, Y: 100, Width: 200, Height: 200}, 0.05},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.bounds.VisiblePercentage(screenW, screenH)
+			diff := got - tt.expected
+			if diff < -0.01 || diff > 0.01 {
+				t.Errorf("Bounds%+v.VisiblePercentage(%d, %d) = %f, want %f",
+					tt.bounds, screenW, screenH, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestBounds_CenterInside(t *testing.T) {
 	outer := Bounds{X: 0, Y: 0, Width: 100, Height: 100}
 

@@ -163,6 +163,19 @@ func flattenElement(elem *ParsedElement, depth int) []*ParsedElement {
 	return result
 }
 
+// FilterOutOfBounds removes elements that are less than 10% visible on screen.
+// This matches Maestro's filterOutOfBounds behavior — page source XML includes
+// elements from the full accessibility tree, not just the visible viewport.
+func FilterOutOfBounds(elements []*ParsedElement, screenWidth, screenHeight int) []*ParsedElement {
+	result := make([]*ParsedElement, 0, len(elements))
+	for _, e := range elements {
+		if e.Bounds.VisiblePercentage(screenWidth, screenHeight) >= 0.1 {
+			result = append(result, e)
+		}
+	}
+	return result
+}
+
 // FilterBySelector filters elements by selector properties.
 func FilterBySelector(elements []*ParsedElement, sel flow.Selector) []*ParsedElement {
 	var result []*ParsedElement

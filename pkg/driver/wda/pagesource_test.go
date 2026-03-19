@@ -620,3 +620,38 @@ func TestSelectByIndex(t *testing.T) {
 		})
 	}
 }
+
+func TestFilterOutOfBounds(t *testing.T) {
+	screenW, screenH := 390, 844
+
+	elements := []*ParsedElement{
+		{Label: "on-screen", Bounds: core.Bounds{X: 50, Y: 100, Width: 200, Height: 50}},
+		{Label: "off-screen-right", Bounds: core.Bounds{X: 500, Y: 100, Width: 200, Height: 50}},
+		{Label: "off-screen-below", Bounds: core.Bounds{X: 50, Y: 900, Width: 200, Height: 50}},
+		{Label: "partially-visible", Bounds: core.Bounds{X: 300, Y: 100, Width: 200, Height: 50}},  // 90/200 = 45% visible
+		{Label: "barely-off", Bounds: core.Bounds{X: 380, Y: 100, Width: 200, Height: 50}},          // 10/200 = 5% visible → filtered
+		{Label: "full-screen", Bounds: core.Bounds{X: 0, Y: 0, Width: 390, Height: 844}},
+	}
+
+	result := FilterOutOfBounds(elements, screenW, screenH)
+
+	expected := map[string]bool{
+		"on-screen":         true,
+		"partially-visible": true,
+		"full-screen":       true,
+	}
+
+	if len(result) != len(expected) {
+		t.Errorf("FilterOutOfBounds returned %d elements, want %d", len(result), len(expected))
+		for _, e := range result {
+			t.Logf("  kept: %s (visible=%.2f)", e.Label, e.Bounds.VisiblePercentage(screenW, screenH))
+		}
+		return
+	}
+
+	for _, e := range result {
+		if !expected[e.Label] {
+			t.Errorf("unexpected element kept: %s", e.Label)
+		}
+	}
+}

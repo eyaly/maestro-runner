@@ -680,6 +680,11 @@ func (d *Driver) findElementRelativeOnce(sel flow.Selector) (*core.ElementInfo, 
 		return nil, fmt.Errorf("failed to parse page source: %w", err)
 	}
 
+	// Filter out off-screen elements before resolving relative selectors
+	if w, h, err := d.screenSize(); err == nil {
+		allElements = FilterOutOfBounds(allElements, w, h)
+	}
+
 	return d.resolveRelativeSelector(sel, allElements)
 }
 
@@ -768,10 +773,15 @@ func (d *Driver) findElementByPageSourceOnce(sel flow.Selector) (*core.ElementIn
 		return nil, err
 	}
 
-	candidates := FilterBySelector(allElements, sel)
-
 	// Filter out off-screen elements — page source XML includes elements
 	// from the full accessibility tree, not just the visible viewport.
+	if w, h, err := d.screenSize(); err == nil {
+		allElements = FilterOutOfBounds(allElements, w, h)
+	}
+
+	candidates := FilterBySelector(allElements, sel)
+
+	// Also filter by WDA's visible attribute
 	visible := candidates[:0]
 	for _, c := range candidates {
 		if c.Displayed {
