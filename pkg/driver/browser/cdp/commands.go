@@ -426,12 +426,23 @@ func (d *Driver) swipe(step *flow.SwipeStep) *core.CommandResult {
 	return successResult(fmt.Sprintf("Swiped %s", dir), nil)
 }
 
+// waitForPageReady waits for the page to finish loading and DOM to stabilize.
+// Used after navigations to handle SPAs that render content after the load event.
+func (d *Driver) waitForPageReady() {
+	d.page.MustWaitLoad()
+	p := d.page.Timeout(5 * time.Second)
+	_ = p.WaitDOMStable(300*time.Millisecond, 0)
+	if d.network != nil {
+		d.network.waitForIdle(5*time.Second, 500*time.Millisecond)
+	}
+}
+
 // back navigates back in browser history.
 func (d *Driver) back(step *flow.BackStep) *core.CommandResult {
 	if err := d.page.NavigateBack(); err != nil {
 		return errorResult(err, "Failed to navigate back")
 	}
-	d.page.MustWaitLoad()
+	d.waitForPageReady()
 	return successResult("Navigated back", nil)
 }
 
@@ -463,7 +474,7 @@ func (d *Driver) launchApp(step *flow.LaunchAppStep) *core.CommandResult {
 	if err := d.page.Navigate(url); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to navigate to %s", url))
 	}
-	d.page.MustWaitLoad()
+	d.waitForPageReady()
 
 	return successResult(fmt.Sprintf("Navigated to %s", url), nil)
 }
@@ -585,7 +596,7 @@ func (d *Driver) navigateToURL(url string) *core.CommandResult {
 	if err := d.page.Navigate(url); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to open %s", url))
 	}
-	d.page.MustWaitLoad()
+	d.waitForPageReady()
 	return successResult(fmt.Sprintf("Opened %s", url), nil)
 }
 
@@ -1306,7 +1317,11 @@ func (d *Driver) openTab(step *flow.OpenTabStep) *core.CommandResult {
 
 	if step.URL != "" {
 		page.MustWaitLoad()
+		p := page.Timeout(5 * time.Second)
+		_ = p.WaitDOMStable(300*time.Millisecond, 0)
 	}
+
+	d.setupNetworkTracking(page)
 
 	if step.TabLabel != "" {
 		d.tabLabels[step.TabLabel] = page

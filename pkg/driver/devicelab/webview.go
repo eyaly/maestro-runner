@@ -40,6 +40,7 @@ type webViewManager struct {
 	page       *rod.Page
 	cdpType    string // "webview"
 	socketPath string // local forwarded socket path
+	network    *webViewNetworkTracker
 
 	forwarder CDPForwarder
 }
@@ -145,6 +146,9 @@ func (m *webViewManager) connectViaUnixSocket(cdpInfo *core.CDPInfo, cdpType str
 	m.page = page
 	m.cdpType = cdpType
 	m.socketPath = socketPath
+
+	// Enable network idle tracking for WebView navigations
+	m.setupNetworkTracking(page)
 
 	logger.Info("[cdp:7-ready] WebView CDP connection ready — type=%s socket=%s page=%s", cdpType, cdpInfo.Socket, pageURL)
 	return nil
@@ -286,6 +290,9 @@ func (m *webViewManager) connectBrowserViaHTTP(cdpInfo *core.CDPInfo, cdpType st
 	m.cdpType = cdpType
 	m.socketPath = socketPath
 
+	// Enable network idle tracking for browser navigations
+	m.setupNetworkTracking(page)
+
 	logger.Info("[cdp:8-ready] Browser CDP connection ready — type=%s socket=%s page=%s", cdpType, cdpInfo.Socket, pageTarget.URL)
 	return nil
 }
@@ -365,6 +372,7 @@ func (m *webViewManager) disconnectLocked() {
 		m.browser = nil
 	}
 	m.page = nil
+	m.network = nil
 	if m.socketPath != "" {
 		logger.Info("[cdp:disconnect] removing ADB forward and cleaning up: %s", m.socketPath)
 		m.forwarder.RemoveSocketForward(m.socketPath)
@@ -390,6 +398,7 @@ func (m *webViewManager) cleanup() {
 		m.browser = nil
 	}
 	m.page = nil
+	m.network = nil
 
 	if socketPath != "" {
 		logger.Info("[cdp:cleanup] removing ADB forward: %s", socketPath)
@@ -513,6 +522,12 @@ func (m *webViewManager) findWebOnce(sel flow.Selector) (core.Element, error) {
 		}
 	}
 
+	// Wait briefly for network idle — if XHR/fetch requests are still in-flight
+	// after navigation, give them a moment to complete before looking for elements.
+	if t := m.getNetworkTracker(); t != nil {
+		t.waitForIdle(1*time.Second, 500*time.Millisecond)
+	}
+
 	elem, err := m.findWebOnceInternal(sel)
 	if err == nil {
 		return elem, nil
@@ -545,6 +560,11 @@ func (m *webViewManager) findWebOnceBrowser(sel flow.Selector) (core.Element, er
 	page := m.rodPage()
 	if page == nil {
 		return nil, fmt.Errorf("no CDP connection")
+	}
+
+	// Wait briefly for network idle before element find
+	if t := m.getNetworkTracker(); t != nil {
+		t.waitForIdle(1*time.Second, 500*time.Millisecond)
 	}
 
 	// Try JS helper first — single CDP roundtrip with visibility check.
@@ -615,8 +635,9 @@ func browserSelectorTypeValue(sel flow.Selector) (string, string) {
 	}
 }
 
-// waitForPageReady waits for document.readyState to be "complete" or "interactive".
-// Bounded to 2 seconds to avoid blocking the polling loop for too long.
+// waitForPageReady waits for document.readyState to be "complete" or "interactive",
+// then waits for network idle (no in-flight requests for 500ms).
+// Bounded to avoid blocking the polling loop for too long.
 func (m *webViewManager) waitForPageReady() {
 	page := m.rodPage()
 	if page == nil {
@@ -628,10 +649,15 @@ func (m *webViewManager) waitForPageReady() {
 		if err == nil {
 			state := result.Value.Str()
 			if state == "complete" || state == "interactive" {
-				return
+				break
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Wait for network idle — XHR/fetch requests to complete after DOM ready
+	if t := m.getNetworkTracker(); t != nil {
+		t.waitForIdle(5*time.Second, 500*time.Millisecond)
 	}
 }
 
@@ -1013,5 +1039,95 @@ type unixDialer struct {
 func (d *unixDialer) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
 	var dialer net.Dialer
 	return dialer.DialContext(ctx, "unix", d.socketPath)
+}
+
+// webViewNetworkTracker tracks in-flight network requests via CDP Network domain events.
+// Used to detect network idle state after in-WebView navigations (link taps, SPA route changes).
+type webViewNetworkTracker struct {
+	mu       sync.Mutex
+	inflight map[proto.NetworkRequestID]struct{}
+	lastIdle time.Time
+}
+
+func newWebViewNetworkTracker() *webViewNetworkTracker {
+	return &webViewNetworkTracker{
+		inflight: make(map[proto.NetworkRequestID]struct{}),
+		lastIdle: time.Now(),
+	}
+}
+
+func (t *webViewNetworkTracker) onRequest(id proto.NetworkRequestID, url string, resourceType proto.NetworkResourceType) {
+	if resourceType == proto.NetworkResourceTypeWebSocket ||
+		resourceType == proto.NetworkResourceTypeEventSource ||
+		strings.HasPrefix(url, "data:") {
+		return
+	}
+	t.mu.Lock()
+	t.inflight[id] = struct{}{}
+	t.mu.Unlock()
+}
+
+func (t *webViewNetworkTracker) onComplete(id proto.NetworkRequestID) {
+	t.mu.Lock()
+	if _, ok := t.inflight[id]; ok {
+		delete(t.inflight, id)
+		if len(t.inflight) == 0 {
+			t.lastIdle = time.Now()
+		}
+	}
+	t.mu.Unlock()
+}
+
+// waitForIdle waits until no network requests are in-flight for quietPeriod.
+// Returns true if idle was reached, false if timeout expired (proceeds anyway).
+func (t *webViewNetworkTracker) waitForIdle(timeout, quietPeriod time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		t.mu.Lock()
+		idle := len(t.inflight) == 0
+		idleSince := t.lastIdle
+		t.mu.Unlock()
+		if idle && time.Since(idleSince) >= quietPeriod {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+// setupNetworkTracking enables the CDP Network domain and subscribes to request
+// lifecycle events. Called after CDP connection is established.
+// Must be called with m.mu held (called from connect methods).
+func (m *webViewManager) setupNetworkTracking(page *rod.Page) {
+	tracker := newWebViewNetworkTracker()
+	m.network = tracker
+
+	if err := (proto.NetworkEnable{}).Call(page); err != nil {
+		logger.Debug("[cdp:network] failed to enable Network domain: %v", err)
+		return
+	}
+
+	go page.EachEvent(
+		func(e *proto.NetworkRequestWillBeSent) {
+			url := ""
+			if e.Request != nil {
+				url = e.Request.URL
+			}
+			tracker.onRequest(e.RequestID, url, e.Type)
+		},
+		func(e *proto.NetworkLoadingFinished) {
+			tracker.onComplete(e.RequestID)
+		},
+		func(e *proto.NetworkLoadingFailed) {
+			tracker.onComplete(e.RequestID)
+		},
+	)()
+}
+
+// getNetworkTracker returns the current network tracker, or nil.
+func (m *webViewManager) getNetworkTracker() *webViewNetworkTracker {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.network
 }
 
