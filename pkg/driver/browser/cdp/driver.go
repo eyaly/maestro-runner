@@ -59,6 +59,9 @@ type Driver struct {
 	fetchEnabled  bool          // whether Fetch domain is enabled
 	networkMu     sync.Mutex    // protects mocks/blocks
 
+	// Network idle tracking (for waitForPageReady)
+	network *networkTracker
+
 	// Console capture
 	consoleLogs []ConsoleEntry
 	consoleMu   sync.Mutex
@@ -161,6 +164,7 @@ func New(cfg Config) (*Driver, error) {
 	// Start background handlers
 	d.startDialogHandler()
 	d.startConsoleHandler()
+	d.setupNetworkTracking(page)
 
 	// Navigate to initial URL if provided
 	if cfg.URL != "" {
@@ -168,6 +172,9 @@ func New(cfg Config) (*Driver, error) {
 			return nil, fmt.Errorf("failed to navigate to %s: %w", cfg.URL, err)
 		}
 		page.MustWaitLoad()
+		p := page.Timeout(5 * time.Second)
+		_ = p.WaitDOMStable(300*time.Millisecond, 0)
+		d.network.waitForIdle(5*time.Second, 500*time.Millisecond)
 	}
 
 	return d, nil
@@ -322,6 +329,107 @@ func (d *Driver) Close() error {
 		}
 	})
 	return d.closeErr
+}
+
+// networkTracker tracks in-flight network requests via CDP Network domain events.
+// Used to detect network idle state after navigations (SPAs with AJAX/fetch).
+type networkTracker struct {
+	mu       sync.Mutex
+	inflight map[proto.NetworkRequestID]struct{}
+	lastIdle time.Time
+}
+
+func newNetworkTracker() *networkTracker {
+	return &networkTracker{
+		inflight: make(map[proto.NetworkRequestID]struct{}),
+		lastIdle: time.Now(),
+	}
+}
+
+func (t *networkTracker) onRequest(id proto.NetworkRequestID, url string, resourceType proto.NetworkResourceType) {
+	// Skip WebSocket connections (never fire loadingFinished) and data: URLs
+	if resourceType == proto.NetworkResourceTypeWebSocket ||
+		resourceType == proto.NetworkResourceTypeEventSource ||
+		strings.HasPrefix(url, "data:") {
+		return
+	}
+	t.mu.Lock()
+	t.inflight[id] = struct{}{}
+	t.mu.Unlock()
+}
+
+func (t *networkTracker) onComplete(id proto.NetworkRequestID) {
+	t.mu.Lock()
+	if _, ok := t.inflight[id]; ok {
+		delete(t.inflight, id)
+		if len(t.inflight) == 0 {
+			t.lastIdle = time.Now()
+		}
+	}
+	t.mu.Unlock()
+}
+
+// waitForIdle waits until no network requests are in-flight for quietPeriod.
+// Returns true if idle was reached, false if timeout expired (proceeds anyway).
+func (t *networkTracker) waitForIdle(timeout, quietPeriod time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		t.mu.Lock()
+		idle := len(t.inflight) == 0
+		idleSince := t.lastIdle
+		t.mu.Unlock()
+		if idle && time.Since(idleSince) >= quietPeriod {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+// setupNetworkTracking enables the CDP Network domain and subscribes to request
+// lifecycle events on the given page. Replaces any previous tracker.
+func (d *Driver) setupNetworkTracking(page *rod.Page) {
+	tracker := newNetworkTracker()
+	d.network = tracker
+
+	if err := (proto.NetworkEnable{}).Call(page); err != nil {
+		log.Printf("[browser] failed to enable Network domain: %v", err)
+		return
+	}
+
+	go page.EachEvent(
+		func(e *proto.NetworkRequestWillBeSent) bool {
+			url := ""
+			if e.Request != nil {
+				url = e.Request.URL
+			}
+			tracker.onRequest(e.RequestID, url, e.Type)
+			select {
+			case <-d.stopCh:
+				return true
+			default:
+				return false
+			}
+		},
+		func(e *proto.NetworkLoadingFinished) bool {
+			tracker.onComplete(e.RequestID)
+			select {
+			case <-d.stopCh:
+				return true
+			default:
+				return false
+			}
+		},
+		func(e *proto.NetworkLoadingFailed) bool {
+			tracker.onComplete(e.RequestID)
+			select {
+			case <-d.stopCh:
+				return true
+			default:
+				return false
+			}
+		},
+	)()
 }
 
 // Execute runs a single step and returns the result.

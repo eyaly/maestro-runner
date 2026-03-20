@@ -744,6 +744,11 @@ func (d *Driver) resolveRelativeSelector(sel flow.Selector) (*core.ElementInfo, 
 		return nil, fmt.Errorf("failed to parse page source: %w", err)
 	}
 
+	// Filter out off-screen elements before resolving relative selectors
+	if w, h, err := d.screenSize(); err == nil {
+		allElements = FilterOutOfBounds(allElements, w, h)
+	}
+
 	// Filter by base selector to get target candidates
 	var candidates []*ParsedElement
 	if baseSel.Text != "" || baseSel.ID != "" || baseSel.Width > 0 || baseSel.Height > 0 {
@@ -919,6 +924,12 @@ func (d *Driver) findElementByPageSourceOnce(sel flow.Selector) (*uiautomator2.E
 		return nil, nil, fmt.Errorf("failed to parse page source: %w", err)
 	}
 
+	// Filter out off-screen elements — page source XML includes elements
+	// from the full accessibility tree, not just the visible viewport.
+	if w, h, err := d.screenSize(); err == nil {
+		allElements = FilterOutOfBounds(allElements, w, h)
+	}
+
 	candidates := FilterBySelector(allElements, sel)
 	candidates = SortClickableFirst(candidates)
 
@@ -979,6 +990,11 @@ func (d *Driver) findElementByPageSourceOnceInternal(sel flow.Selector) (*core.E
 	allElements, err := ParsePageSource(pageSource)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse page source: %w", err)
+	}
+
+	// Filter out off-screen elements
+	if w, h, err := d.screenSize(); err == nil {
+		allElements = FilterOutOfBounds(allElements, w, h)
 	}
 
 	candidates := FilterBySelector(allElements, sel)

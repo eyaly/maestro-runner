@@ -26,8 +26,28 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 		return errorResult(err, fmt.Sprintf("Failed to find element %s", step.Selector.DescribeQuoted()))
 	}
 
+	// Handle <option> elements: select the option via its parent <select> instead of clicking
+	tag, _ := elem.Eval(`() => this.tagName.toLowerCase()`)
+	if tag != nil && tag.Value.Str() == "option" {
+		_, err := elem.Eval(`() => {
+			this.selected = true;
+			var select = this.closest('select');
+			if (select) {
+				select.value = this.value;
+				select.dispatchEvent(new Event('change', {bubbles: true}));
+			}
+		}`)
+		if err != nil {
+			return errorResult(err, "Failed to select option")
+		}
+		return successResult(fmt.Sprintf("Selected option %s", step.Selector.DescribeQuoted()), info)
+	}
+
 	if err := elem.Click(proto.InputMouseButtonLeft, 1); err != nil {
-		return errorResult(err, "Failed to tap on element")
+		// Fallback: use JS click (handles elements that can't receive CDP input events)
+		if _, jsErr := elem.Eval(`() => this.click()`); jsErr != nil {
+			return errorResult(err, "Failed to tap on element")
+		}
 	}
 
 	return successResult(fmt.Sprintf("Tapped on %s", step.Selector.DescribeQuoted()), info)
@@ -102,20 +122,45 @@ func (d *Driver) tapOnPoint(step *flow.TapOnPointStep) *core.CommandResult {
 }
 
 // assertVisible asserts that an element is visible.
+// Uses the JS helper's visibility check for consistency with waitUntil.
 func (d *Driver) assertVisible(step *flow.AssertVisibleStep) *core.CommandResult {
-	_, info, err := d.findElement(step.Selector, isOptional(step.Selector.Optional), step.TimeoutMs)
-	if err != nil {
-		return errorResult(err, fmt.Sprintf("Element %s is not visible", step.Selector.DescribeQuoted()))
+	timeoutMs := step.TimeoutMs
+	if timeoutMs == 0 {
+		timeoutMs = 5000
 	}
+	desc := step.Selector.DescribeQuoted()
 
-	if !info.Visible {
+	selectorType, selectorValue := jsSelectorTypeValue(step.Selector)
+	if selectorType != "" {
+		// Use RAF-based JS polling: consistent with waitUntil visibility checks
+		result, err := d.page.Timeout(time.Duration(timeoutMs+1000) * time.Millisecond).Evaluate(
+			rod.Eval(`(type, value, timeout) => window.__maestro.waitForVisible(type, value, timeout)`,
+				selectorType, selectorValue, timeoutMs).ByPromise(),
+		)
+		if err != nil {
+			return errorResult(err, fmt.Sprintf("Element %s is not visible", desc))
+		}
+		if result.Value.Bool() {
+			return successResult(fmt.Sprintf("Element %s is visible", desc), nil)
+		}
 		return errorResult(
-			fmt.Errorf("element exists but is not visible"),
-			fmt.Sprintf("Element %s exists but is not visible", step.Selector.DescribeQuoted()),
+			fmt.Errorf("element is not visible"),
+			fmt.Sprintf("Element %s is not visible", desc),
 		)
 	}
 
-	return successResult(fmt.Sprintf("Element %s is visible", step.Selector.DescribeQuoted()), info)
+	// Fallback: Rod-based element find with visibility check
+	_, info, err := d.findElement(step.Selector, isOptional(step.Selector.Optional), step.TimeoutMs)
+	if err != nil {
+		return errorResult(err, fmt.Sprintf("Element %s is not visible", desc))
+	}
+	if !info.Visible {
+		return errorResult(
+			fmt.Errorf("element exists but is not visible"),
+			fmt.Sprintf("Element %s exists but is not visible", desc),
+		)
+	}
+	return successResult(fmt.Sprintf("Element %s is visible", desc), info)
 }
 
 // assertNotVisible asserts that an element is NOT visible.
@@ -381,12 +426,23 @@ func (d *Driver) swipe(step *flow.SwipeStep) *core.CommandResult {
 	return successResult(fmt.Sprintf("Swiped %s", dir), nil)
 }
 
+// waitForPageReady waits for the page to finish loading and DOM to stabilize.
+// Used after navigations to handle SPAs that render content after the load event.
+func (d *Driver) waitForPageReady() {
+	d.page.MustWaitLoad()
+	p := d.page.Timeout(5 * time.Second)
+	_ = p.WaitDOMStable(300*time.Millisecond, 0)
+	if d.network != nil {
+		d.network.waitForIdle(5*time.Second, 500*time.Millisecond)
+	}
+}
+
 // back navigates back in browser history.
 func (d *Driver) back(step *flow.BackStep) *core.CommandResult {
 	if err := d.page.NavigateBack(); err != nil {
 		return errorResult(err, "Failed to navigate back")
 	}
-	d.page.MustWaitLoad()
+	d.waitForPageReady()
 	return successResult("Navigated back", nil)
 }
 
@@ -418,7 +474,7 @@ func (d *Driver) launchApp(step *flow.LaunchAppStep) *core.CommandResult {
 	if err := d.page.Navigate(url); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to navigate to %s", url))
 	}
-	d.page.MustWaitLoad()
+	d.waitForPageReady()
 
 	return successResult(fmt.Sprintf("Navigated to %s", url), nil)
 }
@@ -540,7 +596,7 @@ func (d *Driver) navigateToURL(url string) *core.CommandResult {
 	if err := d.page.Navigate(url); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to open %s", url))
 	}
-	d.page.MustWaitLoad()
+	d.waitForPageReady()
 	return successResult(fmt.Sprintf("Opened %s", url), nil)
 }
 
@@ -576,32 +632,99 @@ func (d *Driver) setLocation(step *flow.SetLocationStep) *core.CommandResult {
 }
 
 // waitUntil waits for an element to become visible or not visible.
+// Uses RAF-based browser-side polling for fast resolution (~16ms per check)
+// instead of CDP round-trips with 100ms intervals.
 func (d *Driver) waitUntil(step *flow.WaitUntilStep) *core.CommandResult {
 	timeoutMs := step.TimeoutMs
 	if timeoutMs == 0 {
 		timeoutMs = 30000
 	}
-	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
 
-	for time.Now().Before(deadline) {
-		if step.Visible != nil {
-			_, info, err := d.findElementOnce(*step.Visible)
-			if err == nil && info != nil && info.Visible {
-				return successResult("Element is now visible", info)
-			}
+	if step.Visible != nil {
+		return d.waitUntilVisible(*step.Visible, timeoutMs)
+	}
+	if step.NotVisible != nil {
+		return d.waitUntilNotVisible(*step.NotVisible, timeoutMs)
+	}
+
+	return errorResult(fmt.Errorf("no visible/notVisible condition"), "Wait condition missing")
+}
+
+// waitUntilVisible uses RAF-based JS polling to wait for an element to appear.
+func (d *Driver) waitUntilVisible(sel flow.Selector, timeoutMs int) *core.CommandResult {
+	selectorType, selectorValue := jsSelectorTypeValue(sel)
+	desc := sel.DescribeQuoted()
+
+	if selectorType != "" {
+		result, err := d.page.Timeout(time.Duration(timeoutMs+1000) * time.Millisecond).Evaluate(
+			rod.Eval(`(type, value, timeout) => window.__maestro.waitForVisible(type, value, timeout)`,
+				selectorType, selectorValue, timeoutMs).ByPromise(),
+		)
+		if err != nil {
+			return errorResult(
+				fmt.Errorf("wait condition not met within %dms: %w", timeoutMs, err),
+				fmt.Sprintf("Wait condition not met within %ds", timeoutMs/1000),
+			)
 		}
-		if step.NotVisible != nil {
-			_, info, err := d.findElementOnce(*step.NotVisible)
-			if err != nil || info == nil || !info.Visible {
-				return successResult("Element is no longer visible", nil)
-			}
+		if result.Value.Bool() {
+			return successResult(fmt.Sprintf("Element %s is now visible", desc), nil)
+		}
+		return errorResult(
+			fmt.Errorf("wait condition not met within %dms", timeoutMs),
+			fmt.Sprintf("Wait condition not met within %ds", timeoutMs/1000),
+		)
+	}
+
+	// Fallback for selector types not supported by JS helper: Go-side polling
+	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	for time.Now().Before(deadline) {
+		_, info, err := d.findElementOnce(sel)
+		if err == nil && info != nil && info.Visible {
+			return successResult(fmt.Sprintf("Element %s is now visible", desc), info)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-
 	return errorResult(
 		fmt.Errorf("wait condition not met within %dms", timeoutMs),
 		fmt.Sprintf("Wait condition not met within %ds", timeoutMs/1000),
+	)
+}
+
+// waitUntilNotVisible uses RAF-based JS polling to wait for an element to disappear.
+func (d *Driver) waitUntilNotVisible(sel flow.Selector, timeoutMs int) *core.CommandResult {
+	selectorType, selectorValue := jsSelectorTypeValue(sel)
+	desc := sel.DescribeQuoted()
+
+	if selectorType != "" {
+		result, err := d.page.Timeout(time.Duration(timeoutMs+1000) * time.Millisecond).Evaluate(
+			rod.Eval(`(type, value, timeout) => window.__maestro.waitForNotVisible(type, value, timeout)`,
+				selectorType, selectorValue, timeoutMs).ByPromise(),
+		)
+		if err != nil {
+			// JS eval failed (page navigated, etc.) — element is gone
+			return successResult(fmt.Sprintf("Element %s is no longer visible", desc), nil)
+		}
+		if result.Value.Bool() {
+			return successResult(fmt.Sprintf("Element %s is no longer visible", desc), nil)
+		}
+		return errorResult(
+			fmt.Errorf("element still visible after %dms", timeoutMs),
+			fmt.Sprintf("Element %s is still visible", desc),
+		)
+	}
+
+	// Fallback for selector types not supported by JS helper: Go-side polling
+	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	for time.Now().Before(deadline) {
+		_, info, err := d.findElementOnce(sel)
+		if err != nil || info == nil || !info.Visible {
+			return successResult(fmt.Sprintf("Element %s is no longer visible", desc), nil)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return errorResult(
+		fmt.Errorf("element still visible after %dms", timeoutMs),
+		fmt.Sprintf("Element %s is still visible", desc),
 	)
 }
 
@@ -1194,7 +1317,11 @@ func (d *Driver) openTab(step *flow.OpenTabStep) *core.CommandResult {
 
 	if step.URL != "" {
 		page.MustWaitLoad()
+		p := page.Timeout(5 * time.Second)
+		_ = p.WaitDOMStable(300*time.Millisecond, 0)
 	}
+
+	d.setupNetworkTracking(page)
 
 	if step.TabLabel != "" {
 		d.tabLabels[step.TabLabel] = page

@@ -66,8 +66,10 @@ const (
 	StepRunFlow           StepType = "runFlow"
 	StepRunScript         StepType = "runScript"
 	StepEvalScript        StepType = "evalScript"
-	StepEvalBrowserScript StepType = "evalBrowserScript"
-	StepRunBrowserScript  StepType = "runBrowserScript"
+	StepEvalBrowserScript  StepType = "evalBrowserScript"
+	StepRunBrowserScript   StepType = "runBrowserScript"
+	StepEvalWebViewScript  StepType = "evalWebViewScript"
+	StepRunWebViewScript   StepType = "runWebViewScript"
 	StepGetConsoleLogs    StepType = "getConsoleLogs"
 	StepClearConsoleLogs  StepType = "clearConsoleLogs"
 	StepAssertNoJSErrors  StepType = "assertNoJSErrors"
@@ -525,6 +527,23 @@ type EvalBrowserScriptStep struct {
 
 // RunBrowserScriptStep loads and executes a JS file in the browser page context.
 type RunBrowserScriptStep struct {
+	BaseStep `yaml:",inline"`
+	File     string            `yaml:"file"`   // Path to JS file
+	Env      map[string]string `yaml:"env"`    // Environment variables injected as window.__env
+	Output   string            `yaml:"output"` // Variable name to store the return value
+}
+
+// EvalWebViewScriptStep executes JavaScript in a mobile WebView via CDP.
+// Unlike EvalBrowserScriptStep (desktop browser), this runs in the WebView
+// context of a native Android app.
+type EvalWebViewScriptStep struct {
+	BaseStep `yaml:",inline"`
+	Script   string `yaml:"script"` // JS code to execute in the WebView
+	Output   string `yaml:"output"` // Variable name to store the return value
+}
+
+// RunWebViewScriptStep loads and executes a JS file in a mobile WebView via CDP.
+type RunWebViewScriptStep struct {
 	BaseStep `yaml:",inline"`
 	File     string            `yaml:"file"`   // Path to JS file
 	Env      map[string]string `yaml:"env"`    // Environment variables injected as window.__env

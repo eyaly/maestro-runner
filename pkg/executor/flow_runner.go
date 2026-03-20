@@ -343,6 +343,26 @@ func (fr *FlowRunner) executeStep(idx int, step flow.Step) (report.Status, strin
 			}
 		}
 
+	// EvalWebViewScript - execute JS in mobile WebView, store output variable
+	case *flow.EvalWebViewScriptStep:
+		fr.script.ExpandStep(step)
+		result = fr.driver.Execute(step)
+		if result.Success && s.Output != "" {
+			if val, ok := result.Data.(string); ok {
+				fr.script.SetVariable(s.Output, val)
+			}
+		}
+
+	// RunWebViewScript - execute JS file in mobile WebView, store output variable
+	case *flow.RunWebViewScriptStep:
+		fr.script.ExpandStep(step)
+		result = fr.driver.Execute(step)
+		if result.Success && s.Output != "" {
+			if val, ok := result.Data.(string); ok {
+				fr.script.SetVariable(s.Output, val)
+			}
+		}
+
 	// GetConsoleLogs - execute and store output variable
 	case *flow.GetConsoleLogsStep:
 		result = fr.driver.Execute(step)
@@ -708,6 +728,22 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 			}
 		}
 	case *flow.RunBrowserScriptStep:
+		fr.script.ExpandStep(step)
+		result = fr.driver.Execute(step)
+		if result.Success && s.Output != "" {
+			if val, ok := result.Data.(string); ok {
+				fr.script.SetVariable(s.Output, val)
+			}
+		}
+	case *flow.EvalWebViewScriptStep:
+		fr.script.ExpandStep(step)
+		result = fr.driver.Execute(step)
+		if result.Success && s.Output != "" {
+			if val, ok := result.Data.(string); ok {
+				fr.script.SetVariable(s.Output, val)
+			}
+		}
+	case *flow.RunWebViewScriptStep:
 		fr.script.ExpandStep(step)
 		result = fr.driver.Execute(step)
 		if result.Success && s.Output != "" {

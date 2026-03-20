@@ -110,6 +110,26 @@ func (b Bounds) Contains(x, y int) bool {
 	return x >= b.X && x < b.X+b.Width && y >= b.Y && y < b.Y+b.Height
 }
 
+// VisiblePercentage returns the fraction of the element's area that overlaps
+// with the screen (0.0 to 1.0). Matches Maestro's filterOutOfBounds logic:
+// elements with less than 10% visible are considered off-screen.
+func (b Bounds) VisiblePercentage(screenWidth, screenHeight int) float64 {
+	if b.Width == 0 && b.Height == 0 {
+		return 0
+	}
+	// Full-screen overlay
+	if b.X <= 0 && b.Y <= 0 && b.X+b.Width >= screenWidth && b.Y+b.Height >= screenHeight {
+		return 1.0
+	}
+	visibleX := max(0, min(b.X+b.Width, screenWidth)-max(b.X, 0))
+	visibleY := max(0, min(b.Y+b.Height, screenHeight)-max(b.Y, 0))
+	totalArea := b.Width * b.Height
+	if totalArea == 0 {
+		return 0
+	}
+	return float64(visibleX*visibleY) / float64(totalArea)
+}
+
 // CenterInside checks if the center of inner bounds is inside outer bounds.
 func (b Bounds) CenterInside(outer Bounds) bool {
 	cx, cy := b.Center()

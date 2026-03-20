@@ -233,7 +233,8 @@ func isStepType(key string) bool {
 		StepSetLocation, StepSetOrientation, StepSetAirplaneMode, StepToggleAirplaneMode,
 		StepTravel, StepOpenLink, StepOpenBrowser, StepRepeat, StepRetry, StepRunFlow,
 		StepRunScript, StepEvalScript, StepEvalBrowserScript,
-		StepRunBrowserScript, StepGetConsoleLogs, StepClearConsoleLogs, StepAssertNoJSErrors,
+		StepRunBrowserScript, StepEvalWebViewScript, StepRunWebViewScript,
+		StepGetConsoleLogs, StepClearConsoleLogs, StepAssertNoJSErrors,
 		StepSetCookies, StepGetCookies, StepSaveAuthState, StepLoadAuthState,
 		StepUploadFile, StepWaitForDownload, StepGrantPermissions, StepResetPermissions,
 		StepOpenTab, StepSwitchTab, StepCloseTab,
@@ -646,6 +647,26 @@ func decodeStep(stepType StepType, valueNode *yaml.Node, sourcePath string) (Ste
 			return nil, wrapParseError(sourcePath, valueNode.Line, err)
 		}
 		s.StepType = StepRunBrowserScript
+		return &s, nil
+
+	case StepEvalWebViewScript:
+		var s EvalWebViewScriptStep
+		if valueNode.Kind == yaml.ScalarNode {
+			s.Script = valueNode.Value
+		} else if err := valueNode.Decode(&s); err != nil {
+			return nil, wrapParseError(sourcePath, valueNode.Line, err)
+		}
+		s.StepType = StepEvalWebViewScript
+		return &s, nil
+
+	case StepRunWebViewScript:
+		var s RunWebViewScriptStep
+		if valueNode.Kind == yaml.ScalarNode {
+			s.File = valueNode.Value
+		} else if err := valueNode.Decode(&s); err != nil {
+			return nil, wrapParseError(sourcePath, valueNode.Line, err)
+		}
+		s.StepType = StepRunWebViewScript
 		return &s, nil
 
 	case StepGetConsoleLogs:

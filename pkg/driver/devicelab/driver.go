@@ -12,6 +12,7 @@ import (
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
+	"github.com/devicelab-dev/maestro-runner/pkg/logger"
 	"github.com/devicelab-dev/maestro-runner/pkg/uiautomator2"
 )
 
@@ -86,6 +87,12 @@ type Driver struct {
 
 	// CDP state from background push events (nil = not wired)
 	cdpStateFunc func() *core.CDPInfo
+
+	// WebView CDP connection manager (nil = not wired)
+	webView        *webViewManager
+	lastCDPScan    time.Time     // rate-limit ADB shell CDP scans
+	lastCDPResult  *core.CDPInfo // cached result from last scan
+	knownCDPType   string        // "browser" or "webview" — set from socket name, cleared on CDP down
 }
 
 // New creates a new DeviceLab driver.
@@ -101,6 +108,19 @@ func New(client DeviceLabClient, info *core.PlatformInfo, device ShellExecutor) 
 // from the background monitor.
 func (d *Driver) SetCDPStateFunc(fn func() *core.CDPInfo) {
 	d.cdpStateFunc = fn
+}
+
+// SetWebViewForwarder enables WebView CDP support using the given ADB forwarder.
+// When CDP sockets are detected, Rod will connect to the WebView for element finding.
+func (d *Driver) SetWebViewForwarder(forwarder CDPForwarder) {
+	d.webView = newWebViewManager(forwarder)
+}
+
+// Close cleans up resources (WebView CDP connection, ADB forwards).
+func (d *Driver) Close() {
+	if d.webView != nil {
+		d.webView.disconnect()
+	}
 }
 
 // CDPState returns the latest CDP socket state from push events.
@@ -226,6 +246,12 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	case *flow.WaitForAnimationToEndStep:
 		result = d.waitForAnimationToEnd(s)
 
+	// WebView JS execution
+	case *flow.EvalWebViewScriptStep:
+		result = d.evalWebViewScript(s)
+	case *flow.RunWebViewScriptStep:
+		result = d.runWebViewScript(s)
+
 	// Media
 	case *flow.TakeScreenshotStep:
 		result = d.takeScreenshot(s)
@@ -288,6 +314,204 @@ func (d *Driver) GetState() *core.StateSnapshot {
 // GetPlatformInfo returns device/platform information.
 func (d *Driver) GetPlatformInfo() *core.PlatformInfo {
 	return d.info
+}
+
+// ============================================================================
+// WebView CDP Connection
+// ============================================================================
+
+// ensureWebViewConnection checks CDP state and connects/disconnects Rod as needed.
+// Called at the top of find loops to keep the WebView connection in sync.
+func (d *Driver) ensureWebViewConnection() {
+	if d.webView == nil {
+		return
+	}
+
+	cdpInfo := d.getCDPInfo()
+	if cdpInfo == nil || !cdpInfo.Available {
+		// CDP socket gone — disconnect if connected
+		if d.webView.isConnected() {
+			logger.Info("[cdp:3-connection] CDP socket gone, disconnecting webview")
+			d.webView.disconnect()
+		}
+		d.knownCDPType = "" // Clear browser mode when CDP goes away
+		return
+	}
+
+	// Determine CDP type from socket name — set immediately so isBrowserMode()
+	// works even before the Rod connection is established.
+	cdpType := "webview"
+	if strings.HasPrefix(cdpInfo.Socket, "chrome_devtools_remote") ||
+		strings.HasPrefix(cdpInfo.Socket, "chromium_devtools_remote") {
+		cdpType = "browser"
+	}
+	d.knownCDPType = cdpType
+
+	// CDP socket available — connect if not already.
+	// The on-device agent filters sockets intelligently:
+	//   - webview_devtools_remote_* sockets are always reported
+	//   - chrome_devtools_remote sockets are only reported when a browser is in the foreground
+	// So we trust whatever socket the agent sends us.
+	if !d.webView.isConnected() {
+		logger.Info("[cdp:3-connection] CDP socket available, initiating connection to %s (type=%s)", cdpInfo.Socket, cdpType)
+		if err := d.webView.connect(cdpInfo, cdpType); err != nil {
+			logger.Info("[cdp:3-connection] connect failed: %v (socket=%s)", err, cdpInfo.Socket)
+			return
+		}
+	}
+}
+
+// getCDPInfo returns the current CDP socket info.
+// Tries the push-event tracker first, then falls back to an ADB shell scan.
+func (d *Driver) getCDPInfo() *core.CDPInfo {
+	// Try push-event tracker first (instant, no ADB call).
+	// The on-device agent already filters chrome sockets by foreground app,
+	// so we trust whatever socket it reports.
+	if d.cdpStateFunc != nil {
+		if info := d.cdpStateFunc(); info != nil {
+			logger.Info("[cdp:2-source] detected via push event: socket=%s", info.Socket)
+			return info
+		}
+	}
+
+	// Fallback: scan /proc/net/unix via ADB shell
+	// This handles the case where the push event was missed (e.g., browser was
+	// already open when the WebSocket connection was established).
+	result := d.scanCDPSocket()
+	if result != nil {
+		logger.Info("[cdp:2-source] detected via ADB scan fallback: socket=%s", result.Socket)
+	}
+	return result
+}
+
+// scanCDPSocket scans /proc/net/unix on the device for CDP sockets.
+// Rate-limited to at most once per 500ms to avoid excessive ADB calls.
+// Returns the cached result between scans.
+func (d *Driver) scanCDPSocket() *core.CDPInfo {
+	if d.device == nil {
+		return nil
+	}
+
+	// Rate-limit: return cached result if scanned recently
+	if time.Since(d.lastCDPScan) < 500*time.Millisecond {
+		return d.lastCDPResult
+	}
+	d.lastCDPScan = time.Now()
+
+	output, err := d.device.Shell("cat /proc/net/unix")
+	if err != nil {
+		d.lastCDPResult = nil
+		return nil
+	}
+
+	// Find CDP sockets. Prefer webview sockets over browser sockets.
+	// Browser sockets (chrome_devtools_remote) are only returned when a browser
+	// is actually the foreground app, to avoid connecting to background Chrome.
+	var browserSocket string
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.Contains(line, "devtools_remote") {
+			continue
+		}
+		atIdx := strings.Index(line, "@")
+		if atIdx < 0 {
+			continue
+		}
+		socket := strings.TrimSpace(line[atIdx+1:])
+		// Prefer webview sockets (embedded in the app under test)
+		if strings.HasPrefix(socket, "webview_devtools_remote") {
+			d.lastCDPResult = &core.CDPInfo{Available: true, Socket: socket}
+			return d.lastCDPResult
+		}
+		// Remember browser socket as fallback
+		if strings.HasPrefix(socket, "chrome_devtools_remote") || strings.HasPrefix(socket, "chromium_devtools_remote") {
+			browserSocket = socket
+		}
+	}
+	// Use browser socket only if a browser is actually in the foreground.
+	// This prevents connecting to background Chrome when testing a native app.
+	if browserSocket != "" && d.isBrowserForeground() {
+		d.lastCDPResult = &core.CDPInfo{Available: true, Socket: browserSocket}
+		return d.lastCDPResult
+	}
+
+	d.lastCDPResult = nil
+	return nil
+}
+
+// knownBrowserPackages is the set of Android packages that are browsers.
+// Matches the on-device Java agent's browser detection logic.
+var knownBrowserPackages = map[string]bool{
+	"com.android.chrome":        true,
+	"com.chrome.beta":           true,
+	"com.chrome.dev":            true,
+	"com.chrome.canary":         true,
+	"org.chromium.chrome":       true,
+	"app.vanadium.browser":      true,
+	"org.mozilla.firefox":       true,
+	"org.mozilla.firefox_beta":  true,
+	"com.opera.browser":         true,
+	"com.opera.mini.native":     true,
+	"com.brave.browser":         true,
+	"com.microsoft.emmx":        true,
+	"com.vivaldi.browser":       true,
+	"com.sec.android.app.sbrowser": true,
+}
+
+// isBrowserForeground checks if the foreground app is a known browser.
+// Used by scanCDPSocket to avoid connecting to background Chrome.
+func (d *Driver) isBrowserForeground() bool {
+	if d.device == nil {
+		return false
+	}
+	// dumpsys window displays (SDK 29+) — cheapest way to get foreground activity
+	output, err := d.device.Shell("dumpsys activity activities | grep topResumedActivity")
+	if err != nil || output == "" {
+		return false
+	}
+	// Output format: topResumedActivity=ActivityRecord{... u0 com.package.name/... t123}
+	for pkg := range knownBrowserPackages {
+		if strings.Contains(output, pkg) {
+			return true
+		}
+	}
+	return false
+}
+
+// findFocused returns the currently focused element as a core.Element.
+// Tries Rod first (`:focus` selector), then native ActiveElement().
+func (d *Driver) findFocused() (core.Element, error) {
+	d.ensureWebViewConnection()
+
+	// Try Rod first
+	if d.webView != nil && d.webView.isConnected() {
+		if elem, err := d.webView.findFocusedWeb(); err == nil {
+			return elem, nil
+		}
+	}
+
+	// Try native
+	if d.webView == nil || d.webView.webViewType() != "browser" {
+		active, err := d.client.ActiveElement()
+		if err == nil {
+			info := &core.ElementInfo{Visible: true, Enabled: true}
+			if text, textErr := active.Text(); textErr == nil {
+				info.Text = text
+			}
+			if rect, rectErr := active.Rect(); rectErr == nil {
+				info.Bounds = core.Bounds{X: rect.X, Y: rect.Y, Width: rect.Width, Height: rect.Height}
+			}
+			return &NativeElement{elem: active, client: d.client, info: info}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no focused element")
+}
+
+// isBrowserMode returns true if we know the CDP target is a Chrome browser (not an embedded WebView).
+// Set from socket name when CDP socket is detected — does NOT require an active connection,
+// so native strategies are skipped even while Rod is still connecting.
+func (d *Driver) isBrowserMode() bool {
+	return d.knownCDPType == "browser"
 }
 
 // ============================================================================
@@ -379,6 +603,28 @@ func (d *Driver) findElementDirectWithContext(ctx context.Context, sel flow.Sele
 			}
 			return nil, nil, fmt.Errorf("element '%s' not found: %w", sel.Describe(), ctx.Err())
 		default:
+			// Keep WebView connection in sync (handles late-appearing WebViews)
+			d.ensureWebViewConnection()
+
+			// Try Rod/CDP first (one shot) — if WebView is connected
+			if d.webView != nil && d.webView.isConnected() {
+				cdpStart := time.Now()
+				webElem, err := d.webView.findWebOnce(sel)
+				cdpDur := time.Since(cdpStart)
+				if err == nil {
+					logger.Info("[CDP] found element via CDP: %s (%v)", sel.Describe(), cdpDur)
+					return nil, webElem.Info(), nil
+				}
+				logger.Debug("[CDP] findWebOnce miss: %s (%v)", sel.Describe(), cdpDur)
+			}
+
+			// Browser mode: skip native strategies — all content is web
+			if d.isBrowserMode() {
+				lastErr = fmt.Errorf("element '%s' not found via CDP", sel.Describe())
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+
 			elem, info, err := d.tryFindElement(combined)
 			if err == nil {
 				return elem, info, nil
@@ -437,24 +683,27 @@ func (d *Driver) findElementWithOptions(sel flow.Selector, optional bool, stepTi
 
 // findElementWithContext finds an element using context for deadline management.
 func (d *Driver) findElementWithContext(ctx context.Context, sel flow.Selector, preferClickable bool, fastMode bool) (*uiautomator2.Element, *core.ElementInfo, error) {
-	// Handle relative selectors via page source (position calculation required)
-	if sel.HasRelativeSelector() {
-		return d.findElementRelativeWithContext(ctx, sel)
-	}
+	// Page source paths are native-only — skip in browser mode
+	if !d.isBrowserMode() {
+		// Handle relative selectors via page source (position calculation required)
+		if sel.HasRelativeSelector() {
+			return d.findElementRelativeWithContext(ctx, sel)
+		}
 
-	// Handle size selectors via page source (bounds calculation required)
-	if sel.Width > 0 || sel.Height > 0 {
-		return d.findElementByPageSourceWithContext(ctx, sel)
-	}
+		// Handle size selectors via page source (bounds calculation required)
+		if sel.Width > 0 || sel.Height > 0 {
+			return d.findElementByPageSourceWithContext(ctx, sel)
+		}
 
-	// Handle index selectors via page source (need all matches to pick Nth)
-	if sel.HasNonZeroIndex() {
-		return d.findElementByPageSourceWithContext(ctx, sel)
-	}
+		// Handle index selectors via page source (need all matches to pick Nth)
+		if sel.HasNonZeroIndex() {
+			return d.findElementByPageSourceWithContext(ctx, sel)
+		}
 
-	// Handle regex ID selectors via page source (UiAutomator calls are slow when element absent)
-	if sel.ID != "" && looksLikeRegex(sel.ID) {
-		return d.findElementByPageSourceWithContext(ctx, sel)
+		// Handle regex ID selectors via page source (UiAutomator calls are slow when element absent)
+		if sel.ID != "" && looksLikeRegex(sel.ID) {
+			return d.findElementByPageSourceWithContext(ctx, sel)
+		}
 	}
 
 	// Build strategies for UiAutomator
@@ -475,7 +724,7 @@ func (d *Driver) findElementWithContext(ctx context.Context, sel flow.Selector, 
 		select {
 		case <-ctx.Done():
 			// UiAutomator strategies exhausted - try page source ONCE as final fallback
-			if sel.Text != "" {
+			if !d.isBrowserMode() && sel.Text != "" {
 				_, info, err := d.findElementByPageSourceOnce(sel)
 				if err == nil {
 					return nil, info, nil
@@ -486,7 +735,29 @@ func (d *Driver) findElementWithContext(ctx context.Context, sel flow.Selector, 
 			}
 			return nil, nil, fmt.Errorf("element '%s' not found: %w", sel.Describe(), ctx.Err())
 		default:
-			// Try UiAutomator strategies
+			// Keep WebView connection in sync (handles late-appearing WebViews)
+			d.ensureWebViewConnection()
+
+			// Try Rod/CDP first (one shot, ~20ms) — if WebView is connected
+			if d.webView != nil && d.webView.isConnected() {
+				cdpStart := time.Now()
+				webElem, err := d.webView.findWebOnce(sel)
+				cdpDur := time.Since(cdpStart)
+				if err == nil {
+					logger.Info("[CDP] found element via CDP: %s (%v)", sel.Describe(), cdpDur)
+					return nil, webElem.Info(), nil
+				}
+				logger.Debug("[CDP] findWebOnce miss: %s (%v)", sel.Describe(), cdpDur)
+			}
+
+			// Browser mode: skip native strategies — all content is web
+			if d.isBrowserMode() {
+				lastErr = fmt.Errorf("element '%s' not found via CDP", sel.Describe())
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+
+			// Try native UiAutomator strategies
 			var elem *uiautomator2.Element
 			var info *core.ElementInfo
 			var err error
@@ -499,7 +770,6 @@ func (d *Driver) findElementWithContext(ctx context.Context, sel flow.Selector, 
 				return elem, info, nil
 			}
 			lastErr = err
-			// HTTP round-trip (~100ms) is natural rate limit, no sleep needed
 		}
 	}
 }
@@ -525,6 +795,24 @@ func (d *Driver) calculateTimeout(optional bool, stepTimeoutMs int) time.Duratio
 
 // findElementOnce finds an element with a single attempt (no polling).
 func (d *Driver) findElementOnce(sel flow.Selector) (*uiautomator2.Element, *core.ElementInfo, error) {
+	// Keep WebView connection in sync
+	d.ensureWebViewConnection()
+
+	// Try Rod/CDP first (one shot) — if WebView is connected and not a special selector type
+	if d.webView != nil && d.webView.isConnected() && !sel.HasRelativeSelector() {
+		webElem, err := d.webView.findWebOnce(sel)
+		if err == nil {
+			logger.Info("[CDP] found element via CDP: %s", sel.Describe())
+			return nil, webElem.Info(), nil
+		}
+		logger.Debug("[CDP] findWebOnce miss in findElementOnce: %s — %v", sel.Describe(), err)
+	}
+
+	// Browser mode: skip all native strategies — all content is web
+	if d.isBrowserMode() {
+		return nil, nil, fmt.Errorf("element '%s' not found via CDP", sel.Describe())
+	}
+
 	// Handle relative selectors with single page source fetch
 	if sel.HasRelativeSelector() {
 		return d.findElementRelativeOnce(sel)

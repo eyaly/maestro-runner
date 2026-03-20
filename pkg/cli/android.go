@@ -457,6 +457,9 @@ func createDeviceLabDriver(cfg *RunConfig, dev *device.AndroidDevice, info devic
 		}
 	})
 
+	// Enable WebView CDP element finding via ADB socket forwarding
+	driver.SetWebViewForwarder(dev)
+
 	cleanup := func() {
 		if err := adapter.DeleteSession(); err != nil {
 			logger.Debug("failed to delete session during cleanup: %v", err)

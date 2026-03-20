@@ -175,23 +175,26 @@ func (d *Driver) swipe(step *flow.SwipeStep) *core.CommandResult {
 		direction = "up"
 	}
 
-	centerX := w / 2
-	centerY := h / 2
+	// Swipe coordinates match Maestro behavior:
+	// UP:    50%,50% → 50%,10%
+	// DOWN:  50%,20% → 50%,90%
+	// LEFT:  90%,50% → 10%,50%
+	// RIGHT: 10%,50% → 90%,50%
 	var startX, startY, endX, endY int
 
 	switch direction {
 	case "up":
-		startX, startY = centerX, h*2/3
-		endX, endY = centerX, h/3
+		startX, startY = w*50/100, h*50/100
+		endX, endY = w*50/100, h*10/100
 	case "down":
-		startX, startY = centerX, h/3
-		endX, endY = centerX, h*2/3
+		startX, startY = w*50/100, h*20/100
+		endX, endY = w*50/100, h*90/100
 	case "left":
-		startX, startY = w*2/3, centerY
-		endX, endY = w/3, centerY
+		startX, startY = w*90/100, h*50/100
+		endX, endY = w*10/100, h*50/100
 	case "right":
-		startX, startY = w/3, centerY
-		endX, endY = w*2/3, centerY
+		startX, startY = w*10/100, h*50/100
+		endX, endY = w*90/100, h*50/100
 	default:
 		return errorResult(fmt.Errorf("invalid direction: %s", direction), "")
 	}
@@ -402,18 +405,29 @@ func (d *Driver) assertVisible(step *flow.AssertVisibleStep) *core.CommandResult
 }
 
 func (d *Driver) assertNotVisible(step *flow.AssertNotVisibleStep) *core.CommandResult {
-	timeout := time.Duration(step.TimeoutMs) * time.Millisecond
-	if timeout <= 0 {
-		timeout = 2 * time.Second // Shorter timeout for not visible
+	// Poll with quick checks, waiting for element to disappear.
+	// Each check is a single lookup (no retries). If element is not found
+	// at any point, we pass immediately. If still visible at timeout, fail.
+	timeoutMs := step.TimeoutMs
+	if timeoutMs <= 0 {
+		timeoutMs = 5000
 	}
 
-	// Element should NOT be found
-	_, err := d.findElement(step.Selector, timeout)
-	if err == nil {
-		return errorResult(fmt.Errorf("element is visible when it should not be"), fmt.Sprintf("Element should not be visible: %s", step.Selector.Describe()))
-	}
+	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	pollInterval := 500 * time.Millisecond
 
-	return successResult(fmt.Sprintf("Element is not visible: %s", step.Selector.Describe()), nil)
+	for {
+		info, err := d.findElementOnce(step.Selector)
+		if err != nil || info == nil {
+			return successResult(fmt.Sprintf("Element is not visible: %s", step.Selector.Describe()), nil)
+		}
+
+		if time.Now().After(deadline) {
+			return errorResult(fmt.Errorf("element is visible when it should not be"), fmt.Sprintf("Element should not be visible: %s", step.Selector.Describe()))
+		}
+
+		time.Sleep(pollInterval)
+	}
 }
 
 // Navigation

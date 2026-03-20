@@ -2511,8 +2511,8 @@ func TestSwipeWithMaestroCoordinatesUp(t *testing.T) {
 	if len(shell.commands) != 1 {
 		t.Fatalf("expected 1 shell command, got %d", len(shell.commands))
 	}
-	// UP: startX=540, startY=1680, endX=540, endY=720
-	expected := "input swipe 540 1680 540 720 300"
+	// UP: 50%,50% → 50%,10% = 540,1200 → 540,240
+	expected := "input swipe 540 1200 540 240 300"
 	if shell.commands[0] != expected {
 		t.Errorf("expected command %q, got %q", expected, shell.commands[0])
 	}
@@ -2531,8 +2531,8 @@ func TestSwipeWithMaestroCoordinatesDown(t *testing.T) {
 	if len(shell.commands) != 1 {
 		t.Fatalf("expected 1 shell command, got %d", len(shell.commands))
 	}
-	// DOWN: startX=540, startY=720, endX=540, endY=1680
-	expected := "input swipe 540 720 540 1680 300"
+	// DOWN: 50%,20% → 50%,90% = 540,480 → 540,2160
+	expected := "input swipe 540 480 540 2160 300"
 	if shell.commands[0] != expected {
 		t.Errorf("expected command %q, got %q", expected, shell.commands[0])
 	}
@@ -2551,8 +2551,8 @@ func TestSwipeWithMaestroCoordinatesLeft(t *testing.T) {
 	if len(shell.commands) != 1 {
 		t.Fatalf("expected 1 shell command, got %d", len(shell.commands))
 	}
-	// LEFT: startX=756, startY=1200, endX=324, endY=1200
-	expected := "input swipe 756 1200 324 1200 300"
+	// LEFT: 90%,50% → 10%,50% = 972,1200 → 108,1200
+	expected := "input swipe 972 1200 108 1200 300"
 	if shell.commands[0] != expected {
 		t.Errorf("expected command %q, got %q", expected, shell.commands[0])
 	}
@@ -2571,8 +2571,8 @@ func TestSwipeWithMaestroCoordinatesRight(t *testing.T) {
 	if len(shell.commands) != 1 {
 		t.Fatalf("expected 1 shell command, got %d", len(shell.commands))
 	}
-	// RIGHT: startX=324, startY=1200, endX=756, endY=1200
-	expected := "input swipe 324 1200 756 1200 300"
+	// RIGHT: 10%,50% → 90%,50% = 108,1200 → 972,1200
+	expected := "input swipe 108 1200 972 1200 300"
 	if shell.commands[0] != expected {
 		t.Errorf("expected command %q, got %q", expected, shell.commands[0])
 	}
@@ -2592,8 +2592,8 @@ func TestSwipeWithMaestroCoordinatesDefaultDirection(t *testing.T) {
 	if len(shell.commands) != 1 {
 		t.Fatalf("expected 1 shell command, got %d", len(shell.commands))
 	}
-	// Default = up: startX=540, startY=1680, endX=540, endY=720
-	expected := "input swipe 540 1680 540 720 300"
+	// Default = up: 50%,50% → 50%,10% = 540,1200 → 540,240
+	expected := "input swipe 540 1200 540 240 300"
 	if shell.commands[0] != expected {
 		t.Errorf("expected command %q, got %q", expected, shell.commands[0])
 	}
