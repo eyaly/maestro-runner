@@ -58,6 +58,19 @@ window.__maestro = {
     return false;
   },
 
+  // Filter to deepest elements: remove any element that is an ancestor of another match.
+  // This ensures text-based visibility checks use the actual text-bearing element,
+  // not a parent whose textContent includes hidden children's text.
+  _filterToDeepest: function(elements) {
+    if (elements.length <= 1) return elements;
+    return elements.filter(function(el) {
+      for (var i = 0; i < elements.length; i++) {
+        if (elements[i] !== el && el.contains(elements[i])) return false;
+      }
+      return true;
+    });
+  },
+
   // Find all elements matching a selector.
   _findMatchingElements: function(selectorType, selectorValue) {
     var results = [];
@@ -100,6 +113,7 @@ window.__maestro = {
             results.push(el);
           }
         }
+        results = this._filterToDeepest(results);
         break;
       }
       case 'textContains': {
@@ -109,6 +123,7 @@ window.__maestro = {
           var t = (all[i].textContent || '').trim().toLowerCase();
           if (t.indexOf(lower) !== -1) results.push(all[i]);
         }
+        results = this._filterToDeepest(results);
         break;
       }
       case 'textRegex': {
@@ -121,6 +136,7 @@ window.__maestro = {
             if (re.test(t) || re.test(label)) results.push(all[i]);
           }
         } catch(e) {}
+        results = this._filterToDeepest(results);
         break;
       }
       case 'role': {
