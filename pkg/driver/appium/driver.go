@@ -73,12 +73,12 @@ func (d *Driver) Close() error {
 	return d.client.Disconnect()
 }
 
-// JobUUID returns Sauce Labs appium:jobUuid from the session response when available.
-func (d *Driver) JobUUID() string {
-	return d.client.JobUUID()
+// SLJobUUID returns the Sauce Labs (SL) appium:jobUuid from the session response when available.
+func (d *Driver) SLJobUUID() string {
+	return d.client.SLJobUUID()
 }
 
-// SessionID returns the WebDriver session id.
+// SessionID returns the WebDriver session id (see Client.SessionID for Sauce Labs SL note).
 func (d *Driver) SessionID() string {
 	return d.client.SessionID()
 }

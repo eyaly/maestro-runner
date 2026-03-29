@@ -22,7 +22,7 @@ const w3cElementKey = "element-6066-11e4-a52e-4f735466cecf"
 type Client struct {
 	serverURL    string
 	sessionID    string
-	jobUUID      string // Sauce Labs appium:jobUuid from session response capabilities
+	slJobUUID string // Sauce Labs (SL) only: appium:jobUuid from session response capabilities
 	client       *http.Client
 	platform     string // ios, android
 	screenW      int
@@ -96,9 +96,9 @@ func (c *Client) Connect(capabilities map[string]interface{}) error {
 			// Simulator UDIDs are UUID format (8-4-4-4-12 hex with dashes)
 			c.isRealDevice = !isUUIDFormat(udid)
 		}
-		// appium:jobUuid is Sauce Labs–specific; ignore on other Appium hubs.
+		// appium:jobUuid is Sauce Labs (SL) only; ignore on other Appium hubs.
 		if appiumHubURLIsSauceLabs(c.serverURL) {
-			c.jobUUID = appiumJobUUIDFromCaps(caps)
+			c.slJobUUID = slJobUUIDFromSessionCaps(caps)
 		}
 	}
 
@@ -171,28 +171,29 @@ func (c *Client) Disconnect() error {
 	}
 	_, err := c.delete(c.sessionPath())
 	c.sessionID = ""
-	c.jobUUID = ""
+	c.slJobUUID = ""
 	return err
 }
 
-// JobUUID returns Sauce Labs job id from capability appium:jobUuid when present in the session response.
-func (c *Client) JobUUID() string {
-	return c.jobUUID
+// SLJobUUID returns the Sauce Labs (SL) job id from capability appium:jobUuid when the hub is Sauce Labs.
+// Empty on non-Sauce hubs or when the capability is not returned.
+func (c *Client) SLJobUUID() string {
+	return c.slJobUUID
 }
 
-// SessionID returns the WebDriver session id (Sauce Labs VMs API job_id for emulators/simulators).
+// SessionID returns the WebDriver session id. (On Sauce Labs SL VMs, REST pass/fail uses this as job_id.)
 func (c *Client) SessionID() string {
 	return c.sessionID
 }
 
-// appiumHubURLIsSauceLabs returns true when the Appium server URL points at Sauce Labs.
+// appiumHubURLIsSauceLabs reports whether the Appium server URL is a Sauce Labs (SL) hub.
 func appiumHubURLIsSauceLabs(serverURL string) bool {
 	return strings.Contains(strings.ToLower(strings.TrimSpace(serverURL)), "saucelabs")
 }
 
-// appiumJobUUIDFromCaps reads Sauce Labs job id from merged session capabilities
+// slJobUUIDFromSessionCaps reads the Sauce Labs (SL) job id from merged session capabilities
 // (appium:jobUuid, or jobUuid). Only called when the hub is Sauce Labs.
-func appiumJobUUIDFromCaps(caps map[string]interface{}) string {
+func slJobUUIDFromSessionCaps(caps map[string]interface{}) string {
 	if caps == nil {
 		return ""
 	}

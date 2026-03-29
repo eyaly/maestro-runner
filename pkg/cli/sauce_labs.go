@@ -15,6 +15,8 @@ import (
 	"github.com/devicelab-dev/maestro-runner/pkg/logger"
 )
 
+// Sauce Labs (SL): the functions below are only used when --appium-url points at Sauce Labs.
+
 // sauceLabsAPIBaseFromAppiumURL returns the Sauce Labs REST API base URL for a given Appium hub URL.
 // Used for RDC and other regional API calls (emulators/simulators may share the same regional hosts).
 // Region is inferred from substrings in the full URL.
@@ -77,11 +79,11 @@ func sauceCredentialsFromAppiumURL(appiumURL string) (username, accessKey string
 	return username, accessKey, nil
 }
 
-// sauceCapsDeviceNameIndicatesSimulatorOrEmulator returns true when any capability key
+// slCapsDeviceNameIndicatesSimulatorOrEmulator returns true when any capability key
 // whose name contains "deviceName" (case-insensitive) has a string value containing
 // "Emulator" or "Simulator" (case-insensitive), including nested maps (e.g. sauce:options).
-// Used to choose Sauce VMs API (VDC) vs RDC API for pass/fail updates.
-func sauceCapsDeviceNameIndicatesSimulatorOrEmulator(caps map[string]interface{}) bool {
+// Sauce Labs (SL) only: used to choose VMs API (VDC) vs RDC API for pass/fail updates.
+func slCapsDeviceNameIndicatesSimulatorOrEmulator(caps map[string]interface{}) bool {
 	if caps == nil {
 		return false
 	}
@@ -115,11 +117,11 @@ func sauceCapsDeviceNameIndicatesSimulatorOrEmulator(caps map[string]interface{}
 }
 
 // updateSauceLabsVMsAPIPassed calls PUT /rest/v1/{username}/jobs/{job_id} with {"passed": true|false}.
-// For Appium on Sauce emulators/simulators, job_id is the WebDriver session id (not appium:jobUuid).
+// Sauce Labs (SL) emulators/simulators only: slSessionID is the WebDriver session id (not appium:jobUuid).
 // See https://docs.saucelabs.com/dev/api/jobs/#update-a-job
-func updateSauceLabsVMsAPIPassed(appiumURL, jobID string, passed bool) error {
-	jobID = strings.TrimSpace(jobID)
-	if jobID == "" {
+func updateSauceLabsVMsAPIPassed(appiumURL, slSessionID string, passed bool) error {
+	slSessionID = strings.TrimSpace(slSessionID)
+	if slSessionID == "" {
 		return fmt.Errorf("empty job id")
 	}
 	base, err := sauceLabsAPIBaseFromAppiumURL(appiumURL)
@@ -130,7 +132,7 @@ func updateSauceLabsVMsAPIPassed(appiumURL, jobID string, passed bool) error {
 	if err != nil {
 		return err
 	}
-	endpoint := strings.TrimSuffix(base, "/") + "/rest/v1/" + url.PathEscape(user) + "/jobs/" + url.PathEscape(jobID)
+	endpoint := strings.TrimSuffix(base, "/") + "/rest/v1/" + url.PathEscape(user) + "/jobs/" + url.PathEscape(slSessionID)
 	payload, err := json.Marshal(map[string]bool{"passed": passed})
 	if err != nil {
 		return fmt.Errorf("marshal body: %w", err)
@@ -166,11 +168,11 @@ func updateSauceLabsVMsAPIPassed(appiumURL, jobID string, passed bool) error {
 }
 
 // updateSauceLabsRDCJobPassed calls PUT /v1/rdc/jobs/{job_id} with {"passed": true|false}.
-// job_id is the value from capability appium:jobUuid for applicable Appium sessions on Sauce Labs.
+// Sauce Labs (SL) real devices only: slJobUUID is appium:jobUuid from the session.
 // See https://docs.saucelabs.com/dev/api/rdc/#update-a-job
-func updateSauceLabsRDCJobPassed(appiumURL, jobUUID string, passed bool) error {
-	jobUUID = strings.TrimSpace(jobUUID)
-	if jobUUID == "" {
+func updateSauceLabsRDCJobPassed(appiumURL, slJobUUID string, passed bool) error {
+	slJobUUID = strings.TrimSpace(slJobUUID)
+	if slJobUUID == "" {
 		return fmt.Errorf("empty job id")
 	}
 	base, err := sauceLabsAPIBaseFromAppiumURL(appiumURL)
@@ -181,7 +183,7 @@ func updateSauceLabsRDCJobPassed(appiumURL, jobUUID string, passed bool) error {
 	if err != nil {
 		return err
 	}
-	endpoint := strings.TrimSuffix(base, "/") + "/v1/rdc/jobs/" + url.PathEscape(jobUUID)
+	endpoint := strings.TrimSuffix(base, "/") + "/v1/rdc/jobs/" + url.PathEscape(slJobUUID)
 	payload, err := json.Marshal(map[string]bool{"passed": passed})
 	if err != nil {
 		return fmt.Errorf("marshal body: %w", err)
