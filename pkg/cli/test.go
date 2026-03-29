@@ -472,6 +472,9 @@ type RunConfig struct {
 
 	// Flutter
 	NoFlutterFallback bool // Disable automatic Flutter VM Service fallback
+
+	// Appium (filled when session returns appium:jobUuid, e.g. Sauce Labs)
+	AppiumJobUUID string
 }
 
 func hyperlink(url, text string) string {
@@ -805,6 +808,17 @@ func executeTest(cfg *RunConfig) error {
 	logger.Info("Flow execution completed: %d passed, %d failed, %d skipped",
 		result.PassedFlows, result.FailedFlows, result.SkippedFlows)
 
+	// Sauce Labs RDC: set job passed/fail via REST API (job id = appium:jobUuid).
+	// https://docs.saucelabs.com/dev/api/rdc/#update-a-job
+	if strings.EqualFold(cfg.Driver, "appium") && appiumURLIsSauceLabs(cfg.AppiumURL) && strings.TrimSpace(cfg.AppiumJobUUID) != "" {
+		rdcPassed := result.Status == report.StatusPassed
+		if err := updateSauceLabsRDCJobPassed(cfg.AppiumURL, cfg.AppiumJobUUID, rdcPassed); err != nil {
+			logger.Warn("Sauce Labs RDC job update failed (job %s): %v", cfg.AppiumJobUUID, err)
+		} else {
+			logger.Info("Sauce Labs RDC job updated: job=%s passed=%v", cfg.AppiumJobUUID, rdcPassed)
+		}
+	}
+
 	// 6. Print unified output (works for both single and parallel)
 	if err := printUnifiedOutput(cfg.OutputDir, result); err != nil {
 		fmt.Printf("Warning: Failed to print unified output: %v\n", err)
@@ -874,6 +888,20 @@ func executeTest(cfg *RunConfig) error {
 
 	// 8. Print footer
 	printFooter()
+
+	// Final outcome in maestro-runner.log (not stdout)
+	sauceNote := ""
+	if appiumURLIsSauceLabs(cfg.AppiumURL) {
+		sauceNote = " — platform: Sauce Labs (Appium cloud)"
+	}
+	jobNote := appiumJobUUIDLogFragment(cfg.AppiumJobUUID)
+	if result.Status == report.StatusPassed {
+		logger.Info("=== Test run finished: PASSED (exit 0) — %d/%d flows passed, duration %s%s%s ===",
+			result.PassedFlows, result.TotalFlows, formatDuration(result.Duration), sauceNote, jobNote)
+	} else {
+		logger.Info("=== Test run finished: %s (exit 1) — %d/%d flows passed, %d failed, duration %s%s%s ===",
+			result.Status, result.PassedFlows, result.TotalFlows, result.FailedFlows, formatDuration(result.Duration), sauceNote, jobNote)
+	}
 
 	// Exit with code 1 if any flows failed (summary already printed)
 	if result.Status != report.StatusPassed {
@@ -1473,6 +1501,19 @@ func printSummary(result *executor.RunResult) {
 	fmt.Println(strings.Repeat("═", tableWidth))
 }
 
+// appiumURLIsSauceLabs returns true when --appium-url points at Sauce Labs hubs.
+func appiumURLIsSauceLabs(appiumURL string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(appiumURL)), "saucelabs")
+}
+
+// appiumJobUUIDLogFragment appends appium:jobUuid to summary logs when known.
+func appiumJobUUIDLogFragment(jobUUID string) string {
+	if strings.TrimSpace(jobUUID) == "" {
+		return ""
+	}
+	return ", appium:jobUuid=" + strings.TrimSpace(jobUUID)
+}
+
 // formatDuration formats milliseconds to a human-readable string.
 // Shows milliseconds for values < 1s, seconds otherwise.
 func formatDuration(ms int64) string {
@@ -1647,6 +1688,12 @@ func createAppiumDriver(cfg *RunConfig) (core.Driver, func(), error) {
 		return nil, nil, fmt.Errorf("create Appium session: %w", err)
 	}
 	logger.Info("Appium session created successfully: %s", driver.GetPlatformInfo().DeviceID)
+	if u := driver.JobUUID(); u != "" {
+		cfg.AppiumJobUUID = u
+		if appiumURLIsSauceLabs(cfg.AppiumURL) {
+			logger.Info("Sauce Labs appium:jobUuid=%s", u)
+		}
+	}
 	printSetupSuccess("Appium session created")
 
 	// Cleanup function

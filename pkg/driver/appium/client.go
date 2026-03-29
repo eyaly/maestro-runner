@@ -22,6 +22,7 @@ const w3cElementKey = "element-6066-11e4-a52e-4f735466cecf"
 type Client struct {
 	serverURL    string
 	sessionID    string
+	jobUUID      string // Sauce Labs appium:jobUuid from session response capabilities
 	client       *http.Client
 	platform     string // ios, android
 	screenW      int
@@ -95,6 +96,10 @@ func (c *Client) Connect(capabilities map[string]interface{}) error {
 			// Simulator UDIDs are UUID format (8-4-4-4-12 hex with dashes)
 			c.isRealDevice = !isUUIDFormat(udid)
 		}
+		// appium:jobUuid is Sauce Labs–specific; ignore on other Appium hubs.
+		if appiumHubURLIsSauceLabs(c.serverURL) {
+			c.jobUUID = appiumJobUUIDFromCaps(caps)
+		}
 	}
 
 	// Get screen size
@@ -166,7 +171,32 @@ func (c *Client) Disconnect() error {
 	}
 	_, err := c.delete(c.sessionPath())
 	c.sessionID = ""
+	c.jobUUID = ""
 	return err
+}
+
+// JobUUID returns Sauce Labs job id from capability appium:jobUuid when present in the session response.
+func (c *Client) JobUUID() string {
+	return c.jobUUID
+}
+
+// appiumHubURLIsSauceLabs returns true when the Appium server URL points at Sauce Labs.
+func appiumHubURLIsSauceLabs(serverURL string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(serverURL)), "saucelabs")
+}
+
+// appiumJobUUIDFromCaps reads Sauce Labs job id from merged session capabilities
+// (appium:jobUuid, or jobUuid). Only called when the hub is Sauce Labs.
+func appiumJobUUIDFromCaps(caps map[string]interface{}) string {
+	if caps == nil {
+		return ""
+	}
+	for _, key := range []string{"appium:jobUuid", "jobUuid"} {
+		if s, ok := caps[key].(string); ok && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
 }
 
 // Platform returns the platform (ios/android).

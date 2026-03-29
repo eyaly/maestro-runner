@@ -73,6 +73,11 @@ func (d *Driver) Close() error {
 	return d.client.Disconnect()
 }
 
+// JobUUID returns Sauce Labs appium:jobUuid from the session response when available.
+func (d *Driver) JobUUID() string {
+	return d.client.JobUUID()
+}
+
 // RestartSession closes the existing Appium session and creates a fresh one.
 func (d *Driver) RestartSession() error {
 	if err := d.client.Disconnect(); err != nil {
