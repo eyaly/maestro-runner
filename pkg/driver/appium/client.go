@@ -180,6 +180,11 @@ func (c *Client) JobUUID() string {
 	return c.jobUUID
 }
 
+// SessionID returns the WebDriver session id (Sauce Labs VMs API job_id for emulators/simulators).
+func (c *Client) SessionID() string {
+	return c.sessionID
+}
+
 // appiumHubURLIsSauceLabs returns true when the Appium server URL points at Sauce Labs.
 func appiumHubURLIsSauceLabs(serverURL string) bool {
 	return strings.Contains(strings.ToLower(strings.TrimSpace(serverURL)), "saucelabs")

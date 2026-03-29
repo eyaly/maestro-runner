@@ -78,6 +78,11 @@ func (d *Driver) JobUUID() string {
 	return d.client.JobUUID()
 }
 
+// SessionID returns the WebDriver session id.
+func (d *Driver) SessionID() string {
+	return d.client.SessionID()
+}
+
 // RestartSession closes the existing Appium session and creates a fresh one.
 func (d *Driver) RestartSession() error {
 	if err := d.client.Disconnect(); err != nil {

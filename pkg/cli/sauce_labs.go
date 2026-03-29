@@ -77,6 +77,94 @@ func sauceCredentialsFromAppiumURL(appiumURL string) (username, accessKey string
 	return username, accessKey, nil
 }
 
+// sauceCapsDeviceNameIndicatesSimulatorOrEmulator returns true when any capability key
+// whose name contains "deviceName" (case-insensitive) has a string value containing
+// "Emulator" or "Simulator" (case-insensitive), including nested maps (e.g. sauce:options).
+// Used to choose Sauce VMs API (VDC) vs RDC API for pass/fail updates.
+func sauceCapsDeviceNameIndicatesSimulatorOrEmulator(caps map[string]interface{}) bool {
+	if caps == nil {
+		return false
+	}
+	mentionsSimOrEmu := func(s string) bool {
+		if s == "" {
+			return false
+		}
+		lower := strings.ToLower(s)
+		return strings.Contains(lower, "emulator") || strings.Contains(lower, "simulator")
+	}
+	var walk func(map[string]interface{}, int) bool
+	walk = func(m map[string]interface{}, depth int) bool {
+		if m == nil || depth > 4 {
+			return false
+		}
+		for k, v := range m {
+			if strings.Contains(strings.ToLower(k), "devicename") {
+				if s, ok := v.(string); ok && mentionsSimOrEmu(s) {
+					return true
+				}
+			}
+			if sub, ok := v.(map[string]interface{}); ok {
+				if walk(sub, depth+1) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return walk(caps, 0)
+}
+
+// updateSauceLabsVMsAPIPassed calls PUT /rest/v1/{username}/jobs/{job_id} with {"passed": true|false}.
+// For Appium on Sauce emulators/simulators, job_id is the WebDriver session id (not appium:jobUuid).
+// See https://docs.saucelabs.com/dev/api/jobs/#update-a-job
+func updateSauceLabsVMsAPIPassed(appiumURL, jobID string, passed bool) error {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return fmt.Errorf("empty job id")
+	}
+	base, err := sauceLabsAPIBaseFromAppiumURL(appiumURL)
+	if err != nil {
+		return err
+	}
+	user, key, err := sauceCredentialsFromAppiumURL(appiumURL)
+	if err != nil {
+		return err
+	}
+	endpoint := strings.TrimSuffix(base, "/") + "/rest/v1/" + url.PathEscape(user) + "/jobs/" + url.PathEscape(jobID)
+	payload, err := json.Marshal(map[string]bool{"passed": passed})
+	if err != nil {
+		return fmt.Errorf("marshal body: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.SetBasicAuth(user, key)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	client := &http.Client{Timeout: 31 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("http put: %w", err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debug("sauce labs: close response body: %v", err)
+		}
+	}()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("sauce labs jobs api %s: status %d, body: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
 // updateSauceLabsRDCJobPassed calls PUT /v1/rdc/jobs/{job_id} with {"passed": true|false}.
 // job_id is the value from capability appium:jobUuid for applicable Appium sessions on Sauce Labs.
 // See https://docs.saucelabs.com/dev/api/rdc/#update-a-job
