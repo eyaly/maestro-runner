@@ -474,11 +474,11 @@ type RunConfig struct {
 	NoFlutterFallback bool // Disable automatic Flutter VM Service fallback
 
 	// Sauce Labs (SL) only — RDC job id from session capability appium:jobUuid (real devices).
-	AppiumSLJobUUID string
+	SL_AppiumJobUUID string
 	// Sauce Labs (SL) only — WebDriver session id for VMs API pass/fail on emulators/simulators.
-	AppiumSLSessionID string
+	SL_AppiumSessionID string
 	// Sauce Labs (SL) only — true when merged --caps indicate emulator/simulator via deviceName (see sauce_labs.go).
-	SLCapsIndicateSimulatorOrEmulator bool
+	SL_CapsIndicateSimulatorOrEmulator bool
 }
 
 func hyperlink(url, text string) string {
@@ -819,17 +819,17 @@ func executeTest(cfg *RunConfig) error {
 	// https://docs.saucelabs.com/dev/api/jobs/#update-a-job
 	if strings.EqualFold(cfg.Driver, "appium") && appiumURLIsSauceLabs(cfg.AppiumURL) {
 		slRunPassed := result.Status == report.StatusPassed
-		if cfg.SLCapsIndicateSimulatorOrEmulator && strings.TrimSpace(cfg.AppiumSLSessionID) != "" {
-			if err := updateSauceLabsVMsAPIPassed(cfg.AppiumURL, cfg.AppiumSLSessionID, slRunPassed); err != nil {
-				logger.Warn("Sauce Labs VMs API update failed (session %s): %v", cfg.AppiumSLSessionID, err)
+		if cfg.SL_CapsIndicateSimulatorOrEmulator && strings.TrimSpace(cfg.SL_AppiumSessionID) != "" {
+			if err := SL_UpdateSauceLabsVMsAPIPassed(cfg.AppiumURL, cfg.SL_AppiumSessionID, slRunPassed); err != nil {
+				logger.Warn("Sauce Labs VMs API update failed (session %s): %v", cfg.SL_AppiumSessionID, err)
 			} else {
-				logger.Info("Sauce Labs job updated (VMs API, session=%s) passed=%v", cfg.AppiumSLSessionID, slRunPassed)
+				logger.Info("Sauce Labs job updated (VMs API, session=%s) passed=%v", cfg.SL_AppiumSessionID, slRunPassed)
 			}
-		} else if strings.TrimSpace(cfg.AppiumSLJobUUID) != "" {
-			if err := updateSauceLabsRDCJobPassed(cfg.AppiumURL, cfg.AppiumSLJobUUID, slRunPassed); err != nil {
-				logger.Warn("Sauce Labs RDC job update failed (job %s): %v", cfg.AppiumSLJobUUID, err)
+		} else if strings.TrimSpace(cfg.SL_AppiumJobUUID) != "" {
+			if err := SL_UpdateSauceLabsRDCJobPassed(cfg.AppiumURL, cfg.SL_AppiumJobUUID, slRunPassed); err != nil {
+				logger.Warn("Sauce Labs RDC job update failed (job %s): %v", cfg.SL_AppiumJobUUID, err)
 			} else {
-				logger.Info("Sauce Labs RDC job updated: job=%s passed=%v", cfg.AppiumSLJobUUID, slRunPassed)
+				logger.Info("Sauce Labs RDC job updated: job=%s passed=%v", cfg.SL_AppiumJobUUID, slRunPassed)
 			}
 		}
 	}
@@ -909,7 +909,7 @@ func executeTest(cfg *RunConfig) error {
 	if appiumURLIsSauceLabs(cfg.AppiumURL) {
 		sauceNote = " — platform: Sauce Labs (Appium cloud)"
 	}
-	jobNote := slRunLogSuffix(cfg)
+	jobNote := SL_RunLogSuffix(cfg)
 	if result.Status == report.StatusPassed {
 		logger.Info("=== Test run finished: PASSED (exit 0) — %d/%d flows passed, duration %s%s%s ===",
 			result.PassedFlows, result.TotalFlows, formatDuration(result.Duration), sauceNote, jobNote)
@@ -1521,18 +1521,18 @@ func appiumURLIsSauceLabs(appiumURL string) bool {
 	return strings.Contains(strings.ToLower(strings.TrimSpace(appiumURL)), "saucelabs")
 }
 
-// slRunLogSuffix appends Sauce Labs (SL) job identity to summary logs when known (RDC job UUID or VMs session id).
-func slRunLogSuffix(cfg *RunConfig) string {
+// SL_RunLogSuffix appends Sauce Labs (SL) job identity to summary logs when known (RDC job UUID or VMs session id).
+func SL_RunLogSuffix(cfg *RunConfig) string {
 	if cfg == nil {
 		return ""
 	}
-	if cfg.SLCapsIndicateSimulatorOrEmulator {
-		if sid := strings.TrimSpace(cfg.AppiumSLSessionID); sid != "" {
+	if cfg.SL_CapsIndicateSimulatorOrEmulator {
+		if sid := strings.TrimSpace(cfg.SL_AppiumSessionID); sid != "" {
 			return ", sessionId=" + sid
 		}
 		return ""
 	}
-	if u := strings.TrimSpace(cfg.AppiumSLJobUUID); u != "" {
+	if u := strings.TrimSpace(cfg.SL_AppiumJobUUID); u != "" {
 		return ", appium:jobUuid=" + u
 	}
 	return ""
@@ -1619,7 +1619,7 @@ func executeAppiumSingleSession(cfg *RunConfig, flows []flow.Flow) (*executor.Ru
 	// Refresh Sauce Labs (SL) session id for VMs API (flows may call RestartSession).
 	if ad, ok := driver.(*appiumdriver.Driver); ok && appiumURLIsSauceLabs(cfg.AppiumURL) {
 		if sid := ad.SessionID(); sid != "" {
-			cfg.AppiumSLSessionID = sid
+			cfg.SL_AppiumSessionID = sid
 		}
 	}
 	return result, runErr
@@ -1711,7 +1711,7 @@ func createAppiumDriver(cfg *RunConfig) (core.Driver, func(), error) {
 		settings["waitForIdleTimeout"] = cfg.WaitForIdleTimeout
 	}
 
-	cfg.SLCapsIndicateSimulatorOrEmulator = slCapsDeviceNameIndicatesSimulatorOrEmulator(caps)
+	cfg.SL_CapsIndicateSimulatorOrEmulator = SL_CapsDeviceNameIndicatesSimulatorOrEmulator(caps)
 
 	printSetupStep("Creating Appium session...")
 	logger.Info("Creating Appium session with capabilities: %v", caps)
@@ -1723,17 +1723,17 @@ func createAppiumDriver(cfg *RunConfig) (core.Driver, func(), error) {
 	logger.Info("Appium session created successfully: %s", driver.GetPlatformInfo().DeviceID)
 	if appiumURLIsSauceLabs(cfg.AppiumURL) {
 		if sid := driver.SessionID(); sid != "" {
-			cfg.AppiumSLSessionID = sid
+			cfg.SL_AppiumSessionID = sid
 		}
 	}
 	if u := driver.SLJobUUID(); u != "" {
-		cfg.AppiumSLJobUUID = u
-		if appiumURLIsSauceLabs(cfg.AppiumURL) && !cfg.SLCapsIndicateSimulatorOrEmulator {
+		cfg.SL_AppiumJobUUID = u
+		if appiumURLIsSauceLabs(cfg.AppiumURL) && !cfg.SL_CapsIndicateSimulatorOrEmulator {
 			logger.Info("Sauce Labs appium:jobUuid=%s", u)
 		}
 	}
-	if appiumURLIsSauceLabs(cfg.AppiumURL) && cfg.SLCapsIndicateSimulatorOrEmulator && strings.TrimSpace(cfg.AppiumSLSessionID) != "" {
-		logger.Info("Sauce Labs emulator/simulator session: sessionId=%s (VMs API for pass/fail)", cfg.AppiumSLSessionID)
+	if appiumURLIsSauceLabs(cfg.AppiumURL) && cfg.SL_CapsIndicateSimulatorOrEmulator && strings.TrimSpace(cfg.SL_AppiumSessionID) != "" {
+		logger.Info("Sauce Labs emulator/simulator session: sessionId=%s (VMs API for pass/fail)", cfg.SL_AppiumSessionID)
 	}
 	printSetupSuccess("Appium session created")
 

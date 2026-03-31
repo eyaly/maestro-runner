@@ -98,7 +98,7 @@ func (c *Client) Connect(capabilities map[string]interface{}) error {
 		}
 		// appium:jobUuid is Sauce Labs (SL) only; ignore on other Appium hubs.
 		if appiumHubURLIsSauceLabs(c.serverURL) {
-			c.slJobUUID = slJobUUIDFromSessionCaps(caps)
+			c.slJobUUID = SL_JobUUIDFromSessionCaps(caps)
 		}
 	}
 
@@ -191,9 +191,9 @@ func appiumHubURLIsSauceLabs(serverURL string) bool {
 	return strings.Contains(strings.ToLower(strings.TrimSpace(serverURL)), "saucelabs")
 }
 
-// slJobUUIDFromSessionCaps reads the Sauce Labs (SL) job id from merged session capabilities
+// SL_JobUUIDFromSessionCaps reads the Sauce Labs (SL) job id from merged session capabilities
 // (appium:jobUuid, or jobUuid). Only called when the hub is Sauce Labs.
-func slJobUUIDFromSessionCaps(caps map[string]interface{}) string {
+func SL_JobUUIDFromSessionCaps(caps map[string]interface{}) string {
 	if caps == nil {
 		return ""
 	}

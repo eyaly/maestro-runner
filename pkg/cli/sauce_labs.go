@@ -79,11 +79,11 @@ func sauceCredentialsFromAppiumURL(appiumURL string) (username, accessKey string
 	return username, accessKey, nil
 }
 
-// slCapsDeviceNameIndicatesSimulatorOrEmulator returns true when any capability key
+// SL_CapsDeviceNameIndicatesSimulatorOrEmulator returns true when any capability key
 // whose name contains "deviceName" (case-insensitive) has a string value containing
 // "Emulator" or "Simulator" (case-insensitive), including nested maps (e.g. sauce:options).
 // Sauce Labs (SL) only: used to choose VMs API (VDC) vs RDC API for pass/fail updates.
-func slCapsDeviceNameIndicatesSimulatorOrEmulator(caps map[string]interface{}) bool {
+func SL_CapsDeviceNameIndicatesSimulatorOrEmulator(caps map[string]interface{}) bool {
 	if caps == nil {
 		return false
 	}
@@ -116,10 +116,10 @@ func slCapsDeviceNameIndicatesSimulatorOrEmulator(caps map[string]interface{}) b
 	return walk(caps, 0)
 }
 
-// updateSauceLabsVMsAPIPassed calls PUT /rest/v1/{username}/jobs/{job_id} with {"passed": true|false}.
+// SL_UpdateSauceLabsVMsAPIPassed calls PUT /rest/v1/{username}/jobs/{job_id} with {"passed": true|false}.
 // Sauce Labs (SL) emulators/simulators only: slSessionID is the WebDriver session id (not appium:jobUuid).
 // See https://docs.saucelabs.com/dev/api/jobs/#update-a-job
-func updateSauceLabsVMsAPIPassed(appiumURL, slSessionID string, passed bool) error {
+func SL_UpdateSauceLabsVMsAPIPassed(appiumURL, slSessionID string, passed bool) error {
 	slSessionID = strings.TrimSpace(slSessionID)
 	if slSessionID == "" {
 		return fmt.Errorf("empty job id")
@@ -167,10 +167,10 @@ func updateSauceLabsVMsAPIPassed(appiumURL, slSessionID string, passed bool) err
 	return nil
 }
 
-// updateSauceLabsRDCJobPassed calls PUT /v1/rdc/jobs/{job_id} with {"passed": true|false}.
+// SL_UpdateSauceLabsRDCJobPassed calls PUT /v1/rdc/jobs/{job_id} with {"passed": true|false}.
 // Sauce Labs (SL) real devices only: slJobUUID is appium:jobUuid from the session.
 // See https://docs.saucelabs.com/dev/api/rdc/#update-a-job
-func updateSauceLabsRDCJobPassed(appiumURL, slJobUUID string, passed bool) error {
+func SL_UpdateSauceLabsRDCJobPassed(appiumURL, slJobUUID string, passed bool) error {
 	slJobUUID = strings.TrimSpace(slJobUUID)
 	if slJobUUID == "" {
 		return fmt.Errorf("empty job id")
