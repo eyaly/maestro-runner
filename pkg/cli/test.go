@@ -1526,6 +1526,9 @@ func SL_RunLogSuffix(cfg *RunConfig) string {
 	if cfg == nil {
 		return ""
 	}
+	if !appiumURLIsSauceLabs(cfg.AppiumURL) {
+		return ""
+	}
 	if cfg.SL_CapsIndicateSimulatorOrEmulator {
 		if sid := strings.TrimSpace(cfg.SL_AppiumSessionID); sid != "" {
 			return ", sessionId=" + sid
@@ -1711,7 +1714,11 @@ func createAppiumDriver(cfg *RunConfig) (core.Driver, func(), error) {
 		settings["waitForIdleTimeout"] = cfg.WaitForIdleTimeout
 	}
 
-	cfg.SL_CapsIndicateSimulatorOrEmulator = SL_CapsDeviceNameIndicatesSimulatorOrEmulator(caps)
+	if appiumURLIsSauceLabs(cfg.AppiumURL) {
+		cfg.SL_CapsIndicateSimulatorOrEmulator = SL_CapsDeviceNameIndicatesSimulatorOrEmulator(caps)
+	} else {
+		cfg.SL_CapsIndicateSimulatorOrEmulator = false
+	}
 
 	printSetupStep("Creating Appium session...")
 	logger.Info("Creating Appium session with capabilities: %v", caps)
@@ -1726,11 +1733,15 @@ func createAppiumDriver(cfg *RunConfig) (core.Driver, func(), error) {
 			cfg.SL_AppiumSessionID = sid
 		}
 	}
-	if u := driver.SLJobUUID(); u != "" {
-		cfg.SL_AppiumJobUUID = u
-		if appiumURLIsSauceLabs(cfg.AppiumURL) && !cfg.SL_CapsIndicateSimulatorOrEmulator {
-			logger.Info("Sauce Labs appium:jobUuid=%s", u)
+	if appiumURLIsSauceLabs(cfg.AppiumURL) {
+		if u := driver.SLJobUUID(); u != "" {
+			cfg.SL_AppiumJobUUID = u
+			if !cfg.SL_CapsIndicateSimulatorOrEmulator {
+				logger.Info("Sauce Labs appium:jobUuid=%s", u)
+			}
 		}
+	} else {
+		cfg.SL_AppiumJobUUID = ""
 	}
 	if appiumURLIsSauceLabs(cfg.AppiumURL) && cfg.SL_CapsIndicateSimulatorOrEmulator && strings.TrimSpace(cfg.SL_AppiumSessionID) != "" {
 		logger.Info("Sauce Labs emulator/simulator session: sessionId=%s (VMs API for pass/fail)", cfg.SL_AppiumSessionID)
