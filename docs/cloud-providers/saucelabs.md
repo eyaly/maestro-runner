@@ -25,7 +25,7 @@ Example `provider-caps.json` for Android real device:
   "appium:automationName": "UiAutomator2",
   "appium:deviceName": "Samsung.*",
   "appium:platformVersion": "^1[5-6].*",
-  "appium:app": "storage:filename=<APK_FILE_NAME_IN_SAUCE_STORAGE>",
+  "appium:app": "storage:filename=mda-2.2.0-25.apk",
   "sauce:options": {
     "build": "Maestro Android Run",
     "appiumVersion": "latest"
@@ -41,7 +41,7 @@ Example `provider-caps.json` for iOS real device:
   "appium:automationName": "XCUITest",
   "appium:deviceName": "iPhone.*",
   "appium:platformVersion": "^(18|26).*",
-  "appium:app": "storage:filename=<IPA_FILE_NAME_IN_SAUCE_STORAGE>",
+  "appium:app": "storage:filename=SauceLabs-Demo-App.ipa",
   "sauce:options": {
     "build": "Maestro iOS Run",
     "appiumVersion": "latest",
@@ -58,7 +58,7 @@ Example `provider-caps.json` for Android emulator:
   "appium:automationName": "UiAutomator2",
   "appium:deviceName": "Google Pixel 9 Emulator",
   "appium:platformVersion": "16.0",
-  "appium:app": "storage:filename=<APK_FILE_NAME_IN_SAUCE_STORAGE>",
+  "appium:app": "storage:filename=mda-2.2.0-25.apk",
   "sauce:options": {
     "build": "Maestro Android Emulator Run",
     "appiumVersion": "2.11.0"
@@ -74,7 +74,7 @@ Example `provider-caps.json` for iOS simulator:
   "appium:automationName": "XCUITest",
   "appium:deviceName": "iPhone Simulator",
   "appium:platformVersion": "17.0",
-  "appium:app": "storage:filename=<ZIP_FILE_NAME_IN_SAUCE_STORAGE>",
+  "appium:app": "storage:filename=SauceLabs-Demo-App.Simulator.zip",
   "sauce:options": {
     "build": "Maestro iOS Simulator Run",
     "appiumVersion": "2.11.3"
