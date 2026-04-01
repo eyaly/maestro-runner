@@ -1584,14 +1584,7 @@ func executeAppiumSingleSession(cfg *RunConfig, flows []flow.Flow) (*executor.Ru
 		OnFlowEnd:          onFlowEnd,
 	})
 
-	result, runErr := runner.Run(context.Background(), flows)
-	// Refresh Sauce Labs (SL) session id for VMs API (flows may call RestartSession).
-	if ad, ok := driver.(*appiumdriver.Driver); ok && appiumURLIsSauceLabs(cfg.AppiumURL) {
-		if sid := ad.SessionID(); sid != "" {
-			cfg.SL_AppiumSessionID = sid
-		}
-	}
-	return result, runErr
+	return runner.Run(context.Background(), flows)
 }
 
 // CreateDriver creates the appropriate driver for the platform.
