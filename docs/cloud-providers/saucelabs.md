@@ -74,7 +74,7 @@ Example `provider-caps.json` for iOS simulator:
   "appium:automationName": "XCUITest",
   "appium:deviceName": "iPhone Simulator",
   "appium:platformVersion": "17.0",
-  "appium:app": "storage:filename=ZIP_FILE_NAME_IN_SAUCE_STORAGE",
+  "appium:app": "storage:filename=<ZIP_FILE_NAME_IN_SAUCE_STORAGE>",
   "sauce:options": {
     "build": "Maestro iOS Simulator Run",
     "appiumVersion": "2.11.3"
