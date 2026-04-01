@@ -79,11 +79,11 @@ func sauceCredentialsFromAppiumURL(appiumURL string) (username, accessKey string
 	return username, accessKey, nil
 }
 
-// SL_CapsDeviceNameIndicatesSimulatorOrEmulator returns true when any capability key
+// SL_CapsDeviceNameIndicatesEmuSim returns true when any capability key
 // whose name contains "deviceName" (case-insensitive) has a string value containing
 // "Emulator" or "Simulator" (case-insensitive), including nested maps (e.g. sauce:options).
 // Sauce Labs (SL) only: used to choose VMs API (VDC) vs RDC API for pass/fail updates.
-func SL_CapsDeviceNameIndicatesSimulatorOrEmulator(caps map[string]interface{}) bool {
+func SL_CapsDeviceNameIndicatesEmuSim(caps map[string]interface{}) bool {
 	if caps == nil {
 		return false
 	}

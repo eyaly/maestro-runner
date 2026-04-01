@@ -478,7 +478,7 @@ type RunConfig struct {
 	// Sauce Labs (SL) only — WebDriver session id for VMs API pass/fail on emulators/simulators.
 	SL_AppiumSessionID string
 	// Sauce Labs (SL) only — true when merged --caps indicate emulator/simulator via deviceName (see sauce_labs.go).
-	SL_CapsIndicateSimulatorOrEmulator bool
+	SL_IsEmuSim bool
 }
 
 func hyperlink(url, text string) string {
@@ -819,7 +819,7 @@ func executeTest(cfg *RunConfig) error {
 	// https://docs.saucelabs.com/dev/api/jobs/#update-a-job
 	if strings.EqualFold(cfg.Driver, "appium") && appiumURLIsSauceLabs(cfg.AppiumURL) {
 		slRunPassed := result.Status == report.StatusPassed
-		if cfg.SL_CapsIndicateSimulatorOrEmulator && strings.TrimSpace(cfg.SL_AppiumSessionID) != "" {
+		if cfg.SL_IsEmuSim && strings.TrimSpace(cfg.SL_AppiumSessionID) != "" {
 			if err := SL_UpdateSauceLabsVMsAPIPassed(cfg.AppiumURL, cfg.SL_AppiumSessionID, slRunPassed); err != nil {
 				logger.Warn("Sauce Labs VMs API update failed (session %s): %v", cfg.SL_AppiumSessionID, err)
 			} else {
@@ -1529,7 +1529,7 @@ func SL_RunLogSuffix(cfg *RunConfig) string {
 	if !appiumURLIsSauceLabs(cfg.AppiumURL) {
 		return ""
 	}
-	if cfg.SL_CapsIndicateSimulatorOrEmulator {
+	if cfg.SL_IsEmuSim {
 		if sid := strings.TrimSpace(cfg.SL_AppiumSessionID); sid != "" {
 			return ", sessionId=" + sid
 		}
@@ -1715,9 +1715,9 @@ func createAppiumDriver(cfg *RunConfig) (core.Driver, func(), error) {
 	}
 
 	if appiumURLIsSauceLabs(cfg.AppiumURL) {
-		cfg.SL_CapsIndicateSimulatorOrEmulator = SL_CapsDeviceNameIndicatesSimulatorOrEmulator(caps)
+		cfg.SL_IsEmuSim = SL_CapsDeviceNameIndicatesEmuSim(caps)
 	} else {
-		cfg.SL_CapsIndicateSimulatorOrEmulator = false
+		cfg.SL_IsEmuSim = false
 	}
 
 	printSetupStep("Creating Appium session...")
@@ -1736,14 +1736,14 @@ func createAppiumDriver(cfg *RunConfig) (core.Driver, func(), error) {
 	if appiumURLIsSauceLabs(cfg.AppiumURL) {
 		if u := driver.SLJobUUID(); u != "" {
 			cfg.SL_AppiumJobUUID = u
-			if !cfg.SL_CapsIndicateSimulatorOrEmulator {
+			if !cfg.SL_IsEmuSim {
 				logger.Info("Sauce Labs appium:jobUuid=%s", u)
 			}
 		}
 	} else {
 		cfg.SL_AppiumJobUUID = ""
 	}
-	if appiumURLIsSauceLabs(cfg.AppiumURL) && cfg.SL_CapsIndicateSimulatorOrEmulator && strings.TrimSpace(cfg.SL_AppiumSessionID) != "" {
+	if appiumURLIsSauceLabs(cfg.AppiumURL) && cfg.SL_IsEmuSim && strings.TrimSpace(cfg.SL_AppiumSessionID) != "" {
 		logger.Info("Sauce Labs emulator/simulator session: sessionId=%s (VMs API for pass/fail)", cfg.SL_AppiumSessionID)
 	}
 	printSetupSuccess("Appium session created")
