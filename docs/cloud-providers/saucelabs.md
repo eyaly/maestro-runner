@@ -58,7 +58,7 @@ Example `provider-caps.json` for Android emulator:
   "appium:automationName": "UiAutomator2",
   "appium:deviceName": "Google Pixel 9 Emulator",
   "appium:platformVersion": "16.0",
-  "appium:app": "storage:filename=<APK_FILE_NAME_IN_SAUCE_STORAGE>",
+  "appium:app": "storage:filename=<ZIP_FILE_NAME_IN_SAUCE_STORAGE>",
   "sauce:options": {
     "build": "Maestro Android Emulator Run",
     "appiumVersion": "2.11.0"
