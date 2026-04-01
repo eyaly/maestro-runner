@@ -74,7 +74,7 @@ func sauceCredentialsFromAppiumURL(appiumURL string) (username, accessKey string
 	username = strings.TrimSpace(os.Getenv("SAUCE_USERNAME"))
 	accessKey = strings.TrimSpace(os.Getenv("SAUCE_ACCESS_KEY"))
 	if username == "" || accessKey == "" {
-		return "", "", fmt.Errorf("Sauce credentials missing: use https://USERNAME:ACCESS_KEY@... in --appium-url or set SAUCE_USERNAME and SAUCE_ACCESS_KEY")
+		return "", "", fmt.Errorf("sauce credentials missing: use https://USERNAME:ACCESS_KEY@... in --appium-url or set SAUCE_USERNAME and SAUCE_ACCESS_KEY")
 	}
 	return username, accessKey, nil
 }
