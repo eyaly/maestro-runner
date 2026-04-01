@@ -904,15 +904,6 @@ func executeTest(cfg *RunConfig) error {
 	// 8. Print footer
 	printFooter()
 
-	// Final outcome in maestro-runner.log (not stdout)
-	if result.Status == report.StatusPassed {
-		logger.Info("=== Test run finished: PASSED (exit 0) — %d/%d flows passed, duration %s ===",
-			result.PassedFlows, result.TotalFlows, formatDuration(result.Duration))
-	} else {
-		logger.Info("=== Test run finished: %s (exit 1) — %d/%d flows passed, %d failed, duration %s ===",
-			result.Status, result.PassedFlows, result.TotalFlows, result.FailedFlows, formatDuration(result.Duration))
-	}
-
 	// Exit with code 1 if any flows failed (summary already printed)
 	if result.Status != report.StatusPassed {
 		return cli.Exit("", 1)
