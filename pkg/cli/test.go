@@ -905,17 +905,12 @@ func executeTest(cfg *RunConfig) error {
 	printFooter()
 
 	// Final outcome in maestro-runner.log (not stdout)
-	sauceNote := ""
-	if appiumURLIsSauceLabs(cfg.AppiumURL) {
-		sauceNote = " — platform: Sauce Labs (Appium cloud)"
-	}
-	jobNote := SL_RunLogSuffix(cfg)
 	if result.Status == report.StatusPassed {
-		logger.Info("=== Test run finished: PASSED (exit 0) — %d/%d flows passed, duration %s%s%s ===",
-			result.PassedFlows, result.TotalFlows, formatDuration(result.Duration), sauceNote, jobNote)
+		logger.Info("=== Test run finished: PASSED (exit 0) — %d/%d flows passed, duration %s ===",
+			result.PassedFlows, result.TotalFlows, formatDuration(result.Duration))
 	} else {
-		logger.Info("=== Test run finished: %s (exit 1) — %d/%d flows passed, %d failed, duration %s%s%s ===",
-			result.Status, result.PassedFlows, result.TotalFlows, result.FailedFlows, formatDuration(result.Duration), sauceNote, jobNote)
+		logger.Info("=== Test run finished: %s (exit 1) — %d/%d flows passed, %d failed, duration %s ===",
+			result.Status, result.PassedFlows, result.TotalFlows, result.FailedFlows, formatDuration(result.Duration))
 	}
 
 	// Exit with code 1 if any flows failed (summary already printed)
@@ -1519,26 +1514,6 @@ func printSummary(result *executor.RunResult) {
 // appiumURLIsSauceLabs returns true when --appium-url points at Sauce Labs (SL) Appium hubs.
 func appiumURLIsSauceLabs(appiumURL string) bool {
 	return strings.Contains(strings.ToLower(strings.TrimSpace(appiumURL)), "saucelabs")
-}
-
-// SL_RunLogSuffix appends Sauce Labs (SL) job identity to summary logs when known (RDC job UUID or VMs session id).
-func SL_RunLogSuffix(cfg *RunConfig) string {
-	if cfg == nil {
-		return ""
-	}
-	if !appiumURLIsSauceLabs(cfg.AppiumURL) {
-		return ""
-	}
-	if cfg.SL_IsEmuSim {
-		if sid := strings.TrimSpace(cfg.SL_AppiumSessionID); sid != "" {
-			return ", sessionId=" + sid
-		}
-		return ""
-	}
-	if u := strings.TrimSpace(cfg.SL_AppiumJobUUID); u != "" {
-		return ", appium:jobUuid=" + u
-	}
-	return ""
 }
 
 // formatDuration formats milliseconds to a human-readable string.
