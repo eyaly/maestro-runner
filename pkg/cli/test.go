@@ -438,8 +438,8 @@ type RunConfig struct {
 
 	// Execution
 	Continuous bool
-	Headed  bool   // Show browser window (web only, default is headless)
-	Browser string // chrome, chromium, or path to binary (web only)
+	Headed     bool   // Show browser window (web only, default is headless)
+	Browser    string // chrome, chromium, or path to binary (web only)
 
 	// Device
 	Platform string
@@ -1673,7 +1673,8 @@ func createAppiumDriver(cfg *RunConfig) (core.Driver, func(), error) {
 		settings["waitForIdleTimeout"] = cfg.WaitForIdleTimeout
 	}
 
-	if appiumURLIsSauceLabs(cfg.AppiumURL) {
+	slHub := appiumURLIsSauceLabs(cfg.AppiumURL)
+	if slHub {
 		cfg.SL_IsEmuSim = SL_CapsDeviceNameIndicatesEmuSim(caps)
 	} else {
 		cfg.SL_IsEmuSim = false
@@ -1687,23 +1688,26 @@ func createAppiumDriver(cfg *RunConfig) (core.Driver, func(), error) {
 		return nil, nil, fmt.Errorf("create Appium session: %w", err)
 	}
 	logger.Info("Appium session created successfully: %s", driver.GetPlatformInfo().DeviceID)
-	if appiumURLIsSauceLabs(cfg.AppiumURL) {
+	if slHub {
+		// For Sauce VMs, Sauce's {job_id} is the Appium WebDriver session id.
 		if sid := driver.SessionID(); sid != "" {
 			cfg.SL_AppiumSessionID = sid
 		}
-	}
-	if appiumURLIsSauceLabs(cfg.AppiumURL) {
+
+		// For Sauce RDC, Sauce's {job_id} is appium:jobUuid.
 		if u := driver.SLJobUUID(); u != "" {
 			cfg.SL_AppiumJobUUID = u
 			if !cfg.SL_IsEmuSim {
-				logger.Info("Sauce Labs appium:jobUuid=%s", u)
+				logger.Info("Sauce Labs real device session id: %s", u)
 			}
+		}
+
+		if cfg.SL_IsEmuSim && strings.TrimSpace(cfg.SL_AppiumSessionID) != "" {
+			logger.Info("Sauce Labs emulator/simulator session id: %s", cfg.SL_AppiumSessionID)
 		}
 	} else {
 		cfg.SL_AppiumJobUUID = ""
-	}
-	if appiumURLIsSauceLabs(cfg.AppiumURL) && cfg.SL_IsEmuSim && strings.TrimSpace(cfg.SL_AppiumSessionID) != "" {
-		logger.Info("Sauce Labs emulator/simulator session: sessionId=%s (VMs API for pass/fail)", cfg.SL_AppiumSessionID)
+		cfg.SL_AppiumSessionID = ""
 	}
 	printSetupSuccess("Appium session created")
 
