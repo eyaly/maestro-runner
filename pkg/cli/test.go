@@ -1227,6 +1227,8 @@ func executeFlowsWithMode(cfg *RunConfig, flows []flow.Flow, needsParallel bool,
 		}
 		// Don't create more sessions than flows
 		if count > len(flows) {
+			fmt.Printf("  %s⚠%s --parallel %d but only %d flow(s), using %d session(s)\n",
+				color(colorYellow), color(colorReset), count, len(flows), len(flows))
 			count = len(flows)
 		}
 		return executeAppiumParallel(cfg, count, flows)
