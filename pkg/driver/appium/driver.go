@@ -387,26 +387,31 @@ func (d *Driver) findElementDirect(sel flow.Selector) (*core.ElementInfo, error)
 					return d.getElementInfo(elemID)
 				}
 			} else {
-				// Try exact text match first
+				// Try case-sensitive first (preserves existing behavior)
 				uiSelector := fmt.Sprintf(`new UiSelector().text("%s")`, escaped)
 				if elemID, err := d.client.FindElement("-android uiautomator", uiSelector); err == nil && elemID != "" {
 					return d.getElementInfo(elemID)
 				}
-
-				// Try textContains
 				uiSelector = fmt.Sprintf(`new UiSelector().textContains("%s")`, escaped)
 				if elemID, err := d.client.FindElement("-android uiautomator", uiSelector); err == nil && elemID != "" {
 					return d.getElementInfo(elemID)
 				}
-
-				// Try description (content-desc)
 				uiSelector = fmt.Sprintf(`new UiSelector().description("%s")`, escaped)
 				if elemID, err := d.client.FindElement("-android uiautomator", uiSelector); err == nil && elemID != "" {
 					return d.getElementInfo(elemID)
 				}
-
-				// Try descriptionContains
 				uiSelector = fmt.Sprintf(`new UiSelector().descriptionContains("%s")`, escaped)
+				if elemID, err := d.client.FindElement("-android uiautomator", uiSelector); err == nil && elemID != "" {
+					return d.getElementInfo(elemID)
+				}
+
+				// Case-insensitive fallback
+				ciPattern := fmt.Sprintf(`(?is).*\Q%s\E.*`, escaped)
+				uiSelector = fmt.Sprintf(`new UiSelector().textMatches("%s")`, ciPattern)
+				if elemID, err := d.client.FindElement("-android uiautomator", uiSelector); err == nil && elemID != "" {
+					return d.getElementInfo(elemID)
+				}
+				uiSelector = fmt.Sprintf(`new UiSelector().descriptionMatches("%s")`, ciPattern)
 				if elemID, err := d.client.FindElement("-android uiautomator", uiSelector); err == nil && elemID != "" {
 					return d.getElementInfo(elemID)
 				}
@@ -539,16 +544,23 @@ func (d *Driver) findElementForTap(sel flow.Selector, timeout time.Duration) (*c
 // findElementForTapDirect finds element for tap, trying clickable first then fallback to page source.
 func (d *Driver) findElementForTapDirect(sel flow.Selector) (*core.ElementInfo, error) {
 	escaped := escapeUIAutomatorString(sel.Text)
+	ciPattern := fmt.Sprintf(`(?is).*\Q%s\E.*`, escaped)
 
-	// Step 1: Try clickable elements first (fast path)
-	// Try textContains with clickable filter
+	// Step 1: Try clickable elements first — case-sensitive, then case-insensitive fallback
 	uiSelector := fmt.Sprintf(`new UiSelector().textContains("%s").clickable(true)`, escaped)
 	if elemID, err := d.client.FindElement("-android uiautomator", uiSelector); err == nil && elemID != "" {
 		return d.getElementInfo(elemID)
 	}
-
-	// Try descriptionContains with clickable filter
 	uiSelector = fmt.Sprintf(`new UiSelector().descriptionContains("%s").clickable(true)`, escaped)
+	if elemID, err := d.client.FindElement("-android uiautomator", uiSelector); err == nil && elemID != "" {
+		return d.getElementInfo(elemID)
+	}
+	// Case-insensitive clickable fallback
+	uiSelector = fmt.Sprintf(`new UiSelector().textMatches("%s").clickable(true)`, ciPattern)
+	if elemID, err := d.client.FindElement("-android uiautomator", uiSelector); err == nil && elemID != "" {
+		return d.getElementInfo(elemID)
+	}
+	uiSelector = fmt.Sprintf(`new UiSelector().descriptionMatches("%s").clickable(true)`, ciPattern)
 	if elemID, err := d.client.FindElement("-android uiautomator", uiSelector); err == nil && elemID != "" {
 		return d.getElementInfo(elemID)
 	}
@@ -558,8 +570,16 @@ func (d *Driver) findElementForTapDirect(sel flow.Selector) (*core.ElementInfo, 
 	_, textExistsErr := d.client.FindElement("-android uiautomator", uiSelector)
 
 	if textExistsErr != nil {
-		// Also try description
 		uiSelector = fmt.Sprintf(`new UiSelector().descriptionContains("%s")`, escaped)
+		_, textExistsErr = d.client.FindElement("-android uiautomator", uiSelector)
+	}
+	if textExistsErr != nil {
+		// Case-insensitive fallback
+		uiSelector = fmt.Sprintf(`new UiSelector().textMatches("%s")`, ciPattern)
+		_, textExistsErr = d.client.FindElement("-android uiautomator", uiSelector)
+	}
+	if textExistsErr != nil {
+		uiSelector = fmt.Sprintf(`new UiSelector().descriptionMatches("%s")`, ciPattern)
 		_, textExistsErr = d.client.FindElement("-android uiautomator", uiSelector)
 	}
 

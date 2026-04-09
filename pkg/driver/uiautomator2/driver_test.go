@@ -204,55 +204,59 @@ func (m *MockShellExecutor) Shell(cmd string) (string, error) {
 // ============================================================================
 
 func TestBuildSelectorsText(t *testing.T) {
-	// Literal text uses textContains (not regex)
+	// Literal text: textContains first, then case-insensitive textMatches fallback
 	sel := flow.Selector{Text: "Login"}
 	strategies, err := buildSelectors(sel, 5000)
 	if err != nil {
 		t.Fatalf("buildSelectors failed: %v", err)
 	}
 
-	// Should have 2 strategies: text and description
-	if len(strategies) != 2 {
-		t.Errorf("expected 2 strategies, got %d", len(strategies))
+	// Should have 4 strategies: textContains, descriptionContains, textMatches(ci), descriptionMatches(ci)
+	if len(strategies) != 4 {
+		t.Errorf("expected 4 strategies, got %d", len(strategies))
 	}
 
-	// First should be text-based with textContains (for literal text)
+	// First should be case-sensitive textContains (preserves existing behavior)
 	s := strategies[0]
 	if !strings.Contains(s.Value, "textContains") {
-		t.Errorf("expected textContains in selector, got: %s", s.Value)
+		t.Errorf("expected textContains as first strategy, got: %s", s.Value)
 	}
-	if !strings.Contains(s.Value, `"Login"`) {
-		t.Errorf("expected Login in selector, got: %s", s.Value)
+
+	// Third should be case-insensitive textMatches fallback
+	s = strategies[2]
+	if !strings.Contains(s.Value, "textMatches") {
+		t.Errorf("expected textMatches as fallback, got: %s", s.Value)
+	}
+	if !strings.Contains(s.Value, `\QLogin\E`) {
+		t.Errorf("expected \\QLogin\\E in fallback, got: %s", s.Value)
 	}
 }
 
 func TestBuildSelectorsTextWithPeriod(t *testing.T) {
-	// Text with period (domain name) uses textContains, not regex
+	// Text with period: textContains first, then textMatches with \Q\E fallback
 	sel := flow.Selector{Text: "Join mastodon.social"}
 	strategies, err := buildSelectors(sel, 5000)
 	if err != nil {
 		t.Fatalf("buildSelectors failed: %v", err)
 	}
 
-	// Should have 2 strategies: text and description
-	if len(strategies) != 2 {
-		t.Errorf("expected 2 strategies, got %d", len(strategies))
+	if len(strategies) != 4 {
+		t.Errorf("expected 4 strategies, got %d", len(strategies))
 	}
 
-	// Should use textContains, NOT textMatches
+	// First: case-sensitive textContains
 	s := strategies[0]
 	if !strings.Contains(s.Value, "textContains") {
-		t.Errorf("expected textContains in selector, got: %s", s.Value)
-	}
-	if strings.Contains(s.Value, "textMatches") {
-		t.Errorf("should NOT use textMatches for literal text, got: %s", s.Value)
-	}
-	// The period should NOT be escaped (textContains doesn't use regex)
-	if strings.Contains(s.Value, `\.`) {
-		t.Errorf("period should not be escaped in textContains, got: %s", s.Value)
+		t.Errorf("expected textContains first, got: %s", s.Value)
 	}
 	if !strings.Contains(s.Value, "mastodon.social") {
-		t.Errorf("expected literal text 'mastodon.social' in selector, got: %s", s.Value)
+		t.Errorf("expected literal text in textContains, got: %s", s.Value)
+	}
+
+	// Third: case-insensitive fallback with \Q\E
+	s = strategies[2]
+	if !strings.Contains(s.Value, `\QJoin mastodon.social\E`) {
+		t.Errorf("expected literal text in \\Q\\E fallback, got: %s", s.Value)
 	}
 }
 

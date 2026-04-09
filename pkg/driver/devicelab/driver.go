@@ -570,26 +570,27 @@ func (d *Driver) findElementForTap(sel flow.Selector, optional bool, stepTimeout
 // findElementDirectWithContext finds an element for tap using only UiAutomator strategies.
 // Non-clickable strategies first (fastest match), then clickable fallback. No page source.
 func (d *Driver) findElementDirectWithContext(ctx context.Context, sel flow.Selector) (*uiautomator2.Element, *core.ElementInfo, error) {
-	// Non-clickable first: finds element in 1 round-trip when it exists.
-	// Clickable strategies appended as fallback for disambiguation.
-	allStrategies, _ := buildSelectors(sel, 0)
+	// Clickable first: for tap commands, prefer buttons over labels.
+	// General strategies as fallback when no clickable element matches.
 	clickableStrategies, _ := buildClickableOnlyStrategies(sel)
-	combined := append(allStrategies, clickableStrategies...)
+	allStrategies, _ := buildSelectors(sel, 0)
+	combined := append(clickableStrategies, allStrategies...)
 
-	// When text triggers regex detection, also add literal textContains/descriptionContains
+	// When text triggers regex detection, also add literal textMatches
 	// as fallback. Handles false positives like "alice@example.com (locked out)" where
 	// parentheses trigger regex detection but the text is actually literal.
 	if looksLikeRegex(sel.Text) {
 		escaped := escapeUIAutomatorString(sel.Text)
 		stateFilters := buildStateFilters(sel)
+		pattern := `(?is).*\Q` + escaped + `\E.*`
 		combined = append(combined,
 			LocatorStrategy{
 				Strategy: uiautomator2.StrategyUIAutomator,
-				Value:    `new UiSelector().textContains("` + escaped + `")` + stateFilters,
+				Value:    `new UiSelector().textMatches("` + pattern + `")` + stateFilters,
 			},
 			LocatorStrategy{
 				Strategy: uiautomator2.StrategyUIAutomator,
-				Value:    `new UiSelector().descriptionContains("` + escaped + `")` + stateFilters,
+				Value:    `new UiSelector().descriptionMatches("` + pattern + `")` + stateFilters,
 			},
 		)
 	}
@@ -641,7 +642,8 @@ func buildClickableOnlyStrategies(sel flow.Selector) ([]LocatorStrategy, error) 
 
 	if sel.Text != "" {
 		escaped := escapeUIAutomatorString(sel.Text)
-		// Always try textContains/descriptionContains first (no regex needed)
+		// Try case-sensitive textContains first (preserves existing behavior),
+		// then case-insensitive textMatches as fallback
 		strategies = append(strategies, LocatorStrategy{
 			Strategy: uiautomator2.StrategyUIAutomator,
 			Value:    `new UiSelector().textContains("` + escaped + `").clickable(true)` + stateFilters,
@@ -649,6 +651,15 @@ func buildClickableOnlyStrategies(sel flow.Selector) ([]LocatorStrategy, error) 
 		strategies = append(strategies, LocatorStrategy{
 			Strategy: uiautomator2.StrategyUIAutomator,
 			Value:    `new UiSelector().descriptionContains("` + escaped + `").clickable(true)` + stateFilters,
+		})
+		ciPattern := `(?is).*\Q` + escaped + `\E.*`
+		strategies = append(strategies, LocatorStrategy{
+			Strategy: uiautomator2.StrategyUIAutomator,
+			Value:    `new UiSelector().textMatches("` + ciPattern + `").clickable(true)` + stateFilters,
+		})
+		strategies = append(strategies, LocatorStrategy{
+			Strategy: uiautomator2.StrategyUIAutomator,
+			Value:    `new UiSelector().descriptionMatches("` + ciPattern + `").clickable(true)` + stateFilters,
 		})
 		// Fall back to regex match (case-insensitive) for partial/pattern matches
 		if looksLikeRegex(sel.Text) {
@@ -1314,10 +1325,10 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 		})
 	}
 
-	// Text-based selector
+	// Text-based selector: case-sensitive first, case-insensitive fallback
 	if sel.Text != "" {
 		escaped := escapeUIAutomatorString(sel.Text)
-		// Always try textContains/descriptionContains first (no regex needed, handles special chars)
+		ciPattern := `(?is).*\Q` + escaped + `\E.*`
 		if preferClickable {
 			strategies = append(strategies, LocatorStrategy{
 				Strategy: uiautomator2.StrategyUIAutomator,
@@ -1335,6 +1346,25 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 		strategies = append(strategies, LocatorStrategy{
 			Strategy: uiautomator2.StrategyUIAutomator,
 			Value:    `new UiSelector().descriptionContains("` + escaped + `")` + stateFilters,
+		})
+		// Case-insensitive fallback
+		if preferClickable {
+			strategies = append(strategies, LocatorStrategy{
+				Strategy: uiautomator2.StrategyUIAutomator,
+				Value:    `new UiSelector().textMatches("` + ciPattern + `").clickable(true)` + stateFilters,
+			})
+			strategies = append(strategies, LocatorStrategy{
+				Strategy: uiautomator2.StrategyUIAutomator,
+				Value:    `new UiSelector().descriptionMatches("` + ciPattern + `").clickable(true)` + stateFilters,
+			})
+		}
+		strategies = append(strategies, LocatorStrategy{
+			Strategy: uiautomator2.StrategyUIAutomator,
+			Value:    `new UiSelector().textMatches("` + ciPattern + `")` + stateFilters,
+		})
+		strategies = append(strategies, LocatorStrategy{
+			Strategy: uiautomator2.StrategyUIAutomator,
+			Value:    `new UiSelector().descriptionMatches("` + ciPattern + `")` + stateFilters,
 		})
 		// Fall back to regex match (case-insensitive) with proper escaping
 		if looksLikeRegex(sel.Text) {
