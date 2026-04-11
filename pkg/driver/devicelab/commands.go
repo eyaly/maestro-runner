@@ -722,37 +722,11 @@ func (d *Driver) swipe(step *flow.SwipeStep) *core.CommandResult {
 		}
 	}
 
+	// No selector — use screen coordinates directly (matches Maestro behavior)
 	width, height, err := d.screenSize()
 	if err != nil {
 		return errorResult(err, "Failed to get screen size")
 	}
-
-	scrollableInfo, scrollableCount := d.findScrollableElement(10000)
-
-	if scrollableInfo != nil {
-		b := scrollableInfo.Bounds
-		fmt.Printf("[swipe] Found %d scrollable(s), using: bounds=[%d,%d,%d,%d]\n",
-			scrollableCount, b.X, b.Y, b.Width, b.Height)
-
-		centerX := b.X + b.Width/2
-		var startY, endY int
-		switch direction {
-		case "up":
-			startY = b.Y + b.Height*70/100
-			endY = b.Y + b.Height*30/100
-		case "down":
-			startY = b.Y + b.Height*30/100
-			endY = b.Y + b.Height*70/100
-		default:
-			startY = b.Y + b.Height*70/100
-			endY = b.Y + b.Height*30/100
-		}
-
-		fmt.Printf("[swipe] Coords in scrollable: (%d,%d) → (%d,%d)\n", centerX, startY, centerX, endY)
-		return d.swipeWithAbsoluteCoords(centerX, startY, centerX, endY, step.Duration)
-	}
-
-	fmt.Printf("[swipe] No scrollable found, using screen coordinates (50%% center)\n")
 	return d.swipeWithMaestroCoordinates(direction, width, height, step.Duration)
 }
 
