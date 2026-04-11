@@ -31,6 +31,8 @@ type FlowRunner struct {
 	stepsSkipped int
 	// Sub-command tracking for compound steps (runFlow, repeat, retry)
 	subCommands []report.Command
+	// Effective wait-for-idle timeout (0 = disabled, used to skip settle)
+	waitForIdleTimeout int
 }
 
 // Run executes the flow and returns the result.
@@ -92,6 +94,7 @@ func (fr *FlowRunner) Run() FlowResult {
 	if fr.flow.Config.WaitForIdleTimeout != nil {
 		waitForIdleTimeout = *fr.flow.Config.WaitForIdleTimeout // flow override (highest priority)
 	}
+	fr.waitForIdleTimeout = waitForIdleTimeout
 	if err := fr.driver.SetWaitForIdleTimeout(waitForIdleTimeout); err != nil {
 		// Log warning but continue - some drivers don't support this
 		_ = err // ignore error, just continue
@@ -278,6 +281,14 @@ func (fr *FlowRunner) executeStep(idx int, step flow.Step) (report.Status, strin
 
 	// Expand variables in step before execution
 	fr.script.ExpandStep(step)
+
+	// Settle before input steps that don't have implicit idle wait.
+	// inputText/eraseText send keystrokes directly — if a screen transition
+	// is in progress (from a preceding tap), the input may fire before the
+	// new screen's field has focus.
+	if fr.waitForIdleTimeout > 0 && needsPreSettle(step) {
+		fr.settleAfterAction()
+	}
 
 	// Execute step - route to appropriate handler
 	var result *core.CommandResult
@@ -803,6 +814,10 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 	default:
 		// Expand variables before driver execution
 		fr.script.ExpandStep(step)
+		// Settle before input steps that don't have implicit idle wait
+		if fr.waitForIdleTimeout > 0 && needsPreSettle(step) {
+			fr.settleAfterAction()
+		}
 		result = fr.driver.Execute(step)
 	}
 

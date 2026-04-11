@@ -54,6 +54,39 @@ const (
 	settleInterval     = 200 * time.Millisecond
 )
 
+// settleAfterAction waits for the UI to settle after a UI-mutating action.
+// Matches Maestro's behavior of calling waitForAppToSettle() after every action.
+// Uses DeviceLab's native event-based settle when available, falls back to hierarchy comparison.
+func (fr *FlowRunner) settleAfterAction() {
+	// Check if driver supports native settle (DeviceLab)
+	if settler, ok := fr.driver.(interface {
+		WaitForSettle(timeoutMs, quietMs int) (bool, error)
+	}); ok {
+		settled, err := settler.WaitForSettle(2000, 150)
+		if err != nil {
+			logger.Debug("settleAfterAction: native settle error: %v", err)
+		} else if !settled {
+			logger.Debug("settleAfterAction: native settle timed out")
+		}
+		return
+	}
+
+	// Fallback: hierarchy comparison (10 polls × 200ms, same as Maestro default)
+	fr.waitForSettle(2000)
+}
+
+// needsPreSettle returns true if the step needs the UI to be settled before executing.
+// These steps don't call findElement (which has implicit idle wait), so they need
+// explicit settle to avoid timing issues after screen transitions.
+func needsPreSettle(step flow.Step) bool {
+	switch step.(type) {
+	case *flow.InputTextStep, *flow.InputRandomStep, *flow.EraseTextStep:
+		return true
+	default:
+		return false
+	}
+}
+
 // waitForSettle polls Hierarchy() until two consecutive snapshots match,
 // or the timeout is reached. Returns the final hierarchy snapshot.
 // If timeoutMs <= 0, returns the current hierarchy without polling.
