@@ -107,6 +107,11 @@ func New(client DeviceLabClient, info *core.PlatformInfo, device ShellExecutor) 
 	}
 }
 
+// WaitForSettle delegates to the on-device agent's tree-comparison settle detection.
+func (d *Driver) WaitForSettle(timeoutMs, quietMs int) (bool, error) {
+	return d.client.WaitForSettle(timeoutMs, quietMs)
+}
+
 // SetCDPStateFunc sets the function used to retrieve real-time CDP socket state
 // from the background monitor.
 func (d *Driver) SetCDPStateFunc(fn func() *core.CDPInfo) {

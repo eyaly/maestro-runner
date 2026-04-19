@@ -59,12 +59,12 @@ const (
 // Uses DeviceLab's native event-based settle when available, falls back to hierarchy comparison.
 func (fr *FlowRunner) settleAfterAction() {
 	// Check if driver supports native settle (DeviceLab)
-	if settler, ok := fr.driver.(interface {
+	if settler, ok := core.Unwrap(fr.driver).(interface {
 		WaitForSettle(timeoutMs, quietMs int) (bool, error)
 	}); ok {
 		settled, err := settler.WaitForSettle(2000, 150)
 		if err != nil {
-			logger.Debug("settleAfterAction: native settle error: %v", err)
+			logger.Warn("settleAfterAction: native settle error: %v", err)
 		} else if !settled {
 			logger.Debug("settleAfterAction: native settle timed out")
 		}
@@ -73,6 +73,16 @@ func (fr *FlowRunner) settleAfterAction() {
 
 	// Fallback: hierarchy comparison (10 polls × 200ms, same as Maestro default)
 	fr.waitForSettle(2000)
+}
+
+// isTapAction returns true if the step is a tap that may trigger a screen transition.
+func isTapAction(step flow.Step) bool {
+	switch step.(type) {
+	case *flow.TapOnStep, *flow.DoubleTapOnStep, *flow.LongPressOnStep, *flow.TapOnPointStep:
+		return true
+	default:
+		return false
+	}
 }
 
 // needsPreSettle returns true if the step needs the UI to be settled before executing.

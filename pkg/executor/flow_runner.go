@@ -282,14 +282,6 @@ func (fr *FlowRunner) executeStep(idx int, step flow.Step) (report.Status, strin
 	// Expand variables in step before execution
 	fr.script.ExpandStep(step)
 
-	// Settle before input steps that don't have implicit idle wait.
-	// inputText/eraseText send keystrokes directly — if a screen transition
-	// is in progress (from a preceding tap), the input may fire before the
-	// new screen's field has focus.
-	if fr.waitForIdleTimeout > 0 && needsPreSettle(step) {
-		fr.settleAfterAction()
-	}
-
 	// Execute step - route to appropriate handler
 	var result *core.CommandResult
 
@@ -814,10 +806,6 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 	default:
 		// Expand variables before driver execution
 		fr.script.ExpandStep(step)
-		// Settle before input steps that don't have implicit idle wait
-		if fr.waitForIdleTimeout > 0 && needsPreSettle(step) {
-			fr.settleAfterAction()
-		}
 		result = fr.driver.Execute(step)
 	}
 
