@@ -410,22 +410,9 @@ func (d *Driver) inputText(step *flow.InputTextStep) *core.CommandResult {
 			}
 		}
 	} else {
-		focused, err := d.findFocused()
-		if err != nil {
-			// Fallback: try finding by focused selector
-			focusedTrue := true
-			focusedSel := flow.Selector{Focused: &focusedTrue}
-			_, _, findErr := d.findElement(focusedSel, false, 2000)
-			if findErr != nil {
-				return errorResult(err, "No focused element to type into")
-			}
-			// Re-try findFocused after finding focused element
-			focused, err = d.findFocused()
-			if err != nil {
-				return errorResult(err, "No focused element to type into")
-			}
-		}
-		if err := focused.Input(text); err != nil {
+		// No selector — send key events directly to whatever the OS has focused.
+		// Matches Maestro's behavior: pressKeyCode for each character.
+		if err := d.client.SendKeyActions(text); err != nil {
 			return errorResult(err, fmt.Sprintf("Failed to input text: %v", err))
 		}
 	}
