@@ -40,6 +40,24 @@ func (s *sauceLabs) ExtractMeta(sessionID string, caps map[string]interface{}, m
 	}
 }
 
+// OnRunStart is a no-op — Sauce Labs jobs are created server-side by the
+// Appium session, so there's nothing to signal at run start.
+func (s *sauceLabs) OnRunStart(meta map[string]string, totalFlows int) error {
+	return nil
+}
+
+// OnFlowStart is a no-op — Sauce's dashboard renders test cases from the
+// final result payload, so there's no per-flow API to ping at flow start.
+func (s *sauceLabs) OnFlowStart(meta map[string]string, flowIdx, totalFlows int, name, file string) error {
+	return nil
+}
+
+// OnFlowEnd is a no-op — Sauce's job result is updated once at run end via
+// ReportResult. There's no per-test-case live update API.
+func (s *sauceLabs) OnFlowEnd(meta map[string]string, result *FlowResult) error {
+	return nil
+}
+
 func (s *sauceLabs) ReportResult(appiumURL string, meta map[string]string, result *TestResult) error {
 	jobID := strings.TrimSpace(meta["jobID"])
 	if jobID == "" {

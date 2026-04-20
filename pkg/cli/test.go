@@ -1283,13 +1283,14 @@ func executeSingleDevice(cfg *RunConfig, flows []flow.Flow) (*executor.RunResult
 		WaitForIdleTimeout: cfg.WaitForIdleTimeout,
 		TypingFrequency:    cfg.TypingFrequency,
 		DeviceInfo:         &deviceInfo,
-		OnFlowStart:        onFlowStart,
+		OnFlowStart:        onFlowStartWithCloud(cfg),
 		OnStepComplete:     onStepComplete,
 		OnNestedStep:       onNestedStep,
 		OnNestedFlowStart:  onNestedFlowStart,
-		OnFlowEnd:          onFlowEnd,
+		OnFlowEnd:          onFlowEndWithCloud(cfg),
 	})
 
+	notifyCloudRunStart(cfg, len(flows))
 	return runner.Run(context.Background(), flows)
 }
 
@@ -1323,13 +1324,14 @@ func ExecuteFlowWithDriver(driver core.Driver, cfg *RunConfig, f flow.Flow) (*ex
 		WaitForIdleTimeout: cfg.WaitForIdleTimeout,
 		TypingFrequency:    cfg.TypingFrequency,
 		DeviceInfo:         &deviceInfo,
-		OnFlowStart:        onFlowStart,
+		OnFlowStart:        onFlowStartWithCloud(cfg),
 		OnStepComplete:     onStepComplete,
 		OnNestedStep:       onNestedStep,
 		OnNestedFlowStart:  onNestedFlowStart,
-		OnFlowEnd:          onFlowEnd,
+		OnFlowEnd:          onFlowEndWithCloud(cfg),
 	})
 
+	notifyCloudRunStart(cfg, 1)
 	return runner.Run(context.Background(), []flow.Flow{f})
 }
 
@@ -1381,6 +1383,51 @@ func onFlowStart(flowIdx, totalFlows int, name, file string) {
 		color(colorCyan), flowIdx+1, totalFlows, color(colorReset),
 		color(colorBold), name, color(colorReset), file)
 	fmt.Println(strings.Repeat("─", 60))
+}
+
+// notifyCloudRunStart fires CloudProvider.OnRunStart once before the first flow.
+// Errors are logged and do not abort the run.
+func notifyCloudRunStart(cfg *RunConfig, totalFlows int) {
+	if cfg.CloudProvider == nil {
+		return
+	}
+	if err := cfg.CloudProvider.OnRunStart(cfg.CloudMeta, totalFlows); err != nil {
+		logger.Warn("%s OnRunStart failed: %v", cfg.CloudProvider.Name(), err)
+	}
+}
+
+// onFlowStartWithCloud returns a flow-start callback that logs console progress
+// and fires CloudProvider.OnFlowStart when a cloud provider is configured.
+func onFlowStartWithCloud(cfg *RunConfig) func(flowIdx, totalFlows int, name, file string) {
+	return func(flowIdx, totalFlows int, name, file string) {
+		onFlowStart(flowIdx, totalFlows, name, file)
+		if cfg.CloudProvider == nil {
+			return
+		}
+		if err := cfg.CloudProvider.OnFlowStart(cfg.CloudMeta, flowIdx, totalFlows, name, file); err != nil {
+			logger.Warn("%s OnFlowStart failed: %v", cfg.CloudProvider.Name(), err)
+		}
+	}
+}
+
+// onFlowEndWithCloud returns a flow-end callback that logs console progress
+// and fires CloudProvider.OnFlowEnd when a cloud provider is configured.
+func onFlowEndWithCloud(cfg *RunConfig) func(name string, passed bool, durationMs int64, errMsg string) {
+	return func(name string, passed bool, durationMs int64, errMsg string) {
+		onFlowEnd(name, passed, durationMs, errMsg)
+		if cfg.CloudProvider == nil {
+			return
+		}
+		fr := &cloud.FlowResult{
+			Name:     name,
+			Passed:   passed,
+			Duration: durationMs,
+			Error:    errMsg,
+		}
+		if err := cfg.CloudProvider.OnFlowEnd(cfg.CloudMeta, fr); err != nil {
+			logger.Warn("%s OnFlowEnd failed: %v", cfg.CloudProvider.Name(), err)
+		}
+	}
 }
 
 func onStepComplete(idx int, desc string, passed bool, durationMs int64, errMsg string) {
@@ -1595,13 +1642,14 @@ func executeAppiumSingleSession(cfg *RunConfig, flows []flow.Flow) (*executor.Ru
 		WaitForIdleTimeout: cfg.WaitForIdleTimeout,
 		TypingFrequency:    cfg.TypingFrequency,
 		DeviceInfo:         &deviceInfo,
-		OnFlowStart:        onFlowStart,
+		OnFlowStart:        onFlowStartWithCloud(cfg),
 		OnStepComplete:     onStepComplete,
 		OnNestedStep:       onNestedStep,
 		OnNestedFlowStart:  onNestedFlowStart,
-		OnFlowEnd:          onFlowEnd,
+		OnFlowEnd:          onFlowEndWithCloud(cfg),
 	})
 
+	notifyCloudRunStart(cfg, len(flows))
 	return runner.Run(context.Background(), flows)
 }
 
