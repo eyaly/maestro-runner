@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	goios "github.com/danielpaulus/go-ios/ios"
 	"github.com/danielpaulus/go-ios/ios/zipconduit"
@@ -15,6 +17,11 @@ import (
 	"github.com/devicelab-dev/maestro-runner/pkg/flutter"
 	"github.com/devicelab-dev/maestro-runner/pkg/logger"
 )
+
+// installTimeout is the max time we wait for an iOS app install to complete.
+// Big apps on slow USB can legitimately take a while; 3 minutes is a generous
+// upper bound that still catches infinite hangs.
+const installTimeout = 3 * time.Minute
 
 // simulatorInfo holds iOS simulator information.
 type simulatorInfo struct {
@@ -342,16 +349,81 @@ func getIOSDeviceInfo(udid string) (*iosDeviceInfo, error) {
 }
 
 // installIOSApp installs an app on an iOS device (simulator or physical).
+//
+// Strategy for physical devices:
+//  1. Prefer `xcrun devicectl device install app` (Apple's modern CoreDevice
+//     installer, iOS 17+ friendly) — set MAESTRO_RUNNER_IOS_INSTALLER=zipconduit
+//     to skip.
+//  2. Fall back to go-ios zipconduit for older Xcode / macOS or on devicectl
+//     failure. Both paths run with installTimeout so an unresponsive install
+//     service surfaces as an error instead of hanging forever.
 func installIOSApp(udid string, appPath string, isSimulator bool) error {
 	if isSimulator {
-		out, err := runCommand("xcrun", "simctl", "install", udid, appPath)
-		if err != nil {
-			return fmt.Errorf("simctl install failed: %w\nOutput: %s", err, out)
-		}
-		return nil
+		return installViaSimctl(udid, appPath)
 	}
 
-	// Physical device - use go-ios zipconduit
+	installer := strings.ToLower(strings.TrimSpace(os.Getenv("MAESTRO_RUNNER_IOS_INSTALLER")))
+
+	// Default: prefer devicectl, fall back to zipconduit.
+	if installer != "zipconduit" && devicectlAvailable() {
+		if err := installViaDevicectl(udid, appPath); err == nil {
+			return nil
+		} else if installer == "devicectl" {
+			// User explicitly forced devicectl — propagate the error, don't silently fall back.
+			return err
+		} else {
+			logger.Warn("devicectl install failed, falling back to zipconduit: %v", err)
+		}
+	}
+
+	return installViaZipconduit(udid, appPath)
+}
+
+// installViaSimctl installs on a simulator. Wrapped in a timeout so a stuck
+// simulator can't freeze the whole run.
+func installViaSimctl(udid, appPath string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), installTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "xcrun", "simctl", "install", udid, appPath).CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("simctl install timed out after %v", installTimeout)
+	}
+	if err != nil {
+		return fmt.Errorf("simctl install failed: %w\nOutput: %s", err, out)
+	}
+	return nil
+}
+
+// devicectlAvailable reports whether `xcrun devicectl` works on this host.
+// Requires macOS 14 / Xcode 15+.
+func devicectlAvailable() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := exec.CommandContext(ctx, "xcrun", "devicectl", "--version").Run()
+	return err == nil
+}
+
+// installViaDevicectl uses Apple's modern CoreDevice installer.
+// Supported on iOS 17+ real devices; also works on earlier iOS via Xcode 15+.
+func installViaDevicectl(udid, appPath string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), installTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "xcrun", "devicectl", "device", "install", "app",
+		"--device", udid, appPath).CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("devicectl install timed out after %v", installTimeout)
+	}
+	if err != nil {
+		return fmt.Errorf("devicectl install failed: %w\nOutput: %s", err, string(out))
+	}
+	return nil
+}
+
+// installViaZipconduit uses the go-ios Go-native installer. Kept as a fallback
+// for hosts without devicectl (older macOS / Xcode). Wrapped in a timeout —
+// without it, SendFile can hang indefinitely when the install service accepts
+// the connection but never acks completion (observed on iOS 26 / iPhone 13).
+func installViaZipconduit(udid, appPath string) error {
 	entry, err := goios.GetDevice(udid)
 	if err != nil {
 		return fmt.Errorf("device %s not found: %w", udid, err)
@@ -360,10 +432,20 @@ func installIOSApp(udid string, appPath string, isSimulator bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to device install service: %w", err)
 	}
-	if err := conn.SendFile(appPath); err != nil {
-		return fmt.Errorf("failed to install app: %w", err)
+
+	done := make(chan error, 1)
+	go func() { done <- conn.SendFile(appPath) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("failed to install app: %w", err)
+		}
+		return nil
+	case <-time.After(installTimeout):
+		return fmt.Errorf("app install timed out after %v (try: xcrun devicectl device install app --device %s %s)",
+			installTimeout, udid, appPath)
 	}
-	return nil
 }
 
 // getSimulatorInfo gets information about an iOS simulator.
