@@ -107,6 +107,62 @@ func TestExpandVariables(t *testing.T) {
 	}
 }
 
+func TestExpandVariables_DefaultValues(t *testing.T) {
+	engine := New()
+	defer engine.Close()
+
+	// Set one variable, leave others undefined
+	engine.SetVariable("DEFINED_VAR", "existing_value")
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"undefined var with || fallback", `${APP_ID || "com.example.app"}`, "com.example.app"},
+		{"undefined var with || single quotes", `${APP_ID || 'com.example.app'}`, "com.example.app"},
+		{"defined var with || fallback", `${DEFINED_VAR || "fallback"}`, "existing_value"},
+		{"undefined var with ?? fallback", `${UNDEF_VAR ?? "nullish_default"}`, "nullish_default"},
+		{"multiple undefined in chain", `${UNDEF_A || UNDEF_B || "last"}`, "last"},
+		{"default value in text", `App: ${APP_ID || "com.example.app"}`, "App: com.example.app"},
+		{"ternary with undefined", `${UNDEF_X ? "yes" : "no"}`, "no"},
+		{"mixed defined and default", `${DEFINED_VAR}-${UNDEF_VAR || "default"}`, "existing_value-default"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := engine.ExpandVariables(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestExtractUndefinedVarName(t *testing.T) {
+	tests := []struct {
+		errMsg   string
+		expected string
+	}{
+		{"JS eval error: ReferenceError: APP_ID is not defined at <eval>:1:1(0)", "APP_ID"},
+		{"JS eval error: ReferenceError: myVar is not defined at <eval>:1:1(0)", "myVar"},
+		{"JS eval error: TypeError: something went wrong", ""},
+		{"random error", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.errMsg, func(t *testing.T) {
+			result := extractUndefinedVarName(tt.errMsg)
+			if result != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, result)
+			}
+		})
+	}
+}
+
 func TestConsoleLog(t *testing.T) {
 	engine := New()
 	defer engine.Close()

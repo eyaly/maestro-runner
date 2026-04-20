@@ -1,6 +1,7 @@
 package cdp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -658,6 +659,9 @@ func (d *Driver) SetFindTimeout(ms int) {
 func (d *Driver) SetWaitForIdleTimeout(ms int) error {
 	return nil
 }
+
+// SetContext is a no-op for browser — Rod waits use their own timeouts.
+func (d *Driver) SetContext(ctx context.Context) {}
 
 // successResult creates a success result.
 func successResult(msg string, elem *core.ElementInfo) *core.CommandResult {

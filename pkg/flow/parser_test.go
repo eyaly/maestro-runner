@@ -396,6 +396,55 @@ func TestParse_RunFlowWithInlineSteps(t *testing.T) {
 	}
 }
 
+func TestParse_RunFlowWithTimeout(t *testing.T) {
+	yaml := `
+- runFlow:
+    file: login.yaml
+    timeout: 5000
+    env:
+      user: test
+`
+	flow, err := Parse([]byte(yaml), "test.yaml")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	runFlow, ok := flow.Steps[0].(*RunFlowStep)
+	if !ok {
+		t.Fatalf("expected RunFlowStep, got %T", flow.Steps[0])
+	}
+	if runFlow.TimeoutMs != 5000 {
+		t.Errorf("expected TimeoutMs=5000, got %d", runFlow.TimeoutMs)
+	}
+	if runFlow.File != "login.yaml" {
+		t.Errorf("expected file=login.yaml, got %q", runFlow.File)
+	}
+}
+
+func TestParse_RunFlowInlineWithTimeout(t *testing.T) {
+	yaml := `
+- runFlow:
+    timeout: 3000
+    commands:
+      - assertVisible: "Hello"
+`
+	flow, err := Parse([]byte(yaml), "test.yaml")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	runFlow, ok := flow.Steps[0].(*RunFlowStep)
+	if !ok {
+		t.Fatalf("expected RunFlowStep, got %T", flow.Steps[0])
+	}
+	if runFlow.TimeoutMs != 3000 {
+		t.Errorf("expected TimeoutMs=3000, got %d", runFlow.TimeoutMs)
+	}
+	if len(runFlow.Steps) != 1 {
+		t.Errorf("expected 1 inline step, got %d", len(runFlow.Steps))
+	}
+}
+
 func TestParse_NestedRepeat(t *testing.T) {
 	yaml := `
 - repeat:
@@ -889,7 +938,7 @@ func TestParse_AssertConditionStep(t *testing.T) {
       text: "Success"
     notVisible:
       text: "Error"
-    scriptCondition: "result === true"
+    true: "result === true"
     platform: Android
 `
 	flow, err := Parse([]byte(yaml), "test.yaml")

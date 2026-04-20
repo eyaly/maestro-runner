@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -31,6 +32,7 @@ func (m *mockDriver) GetState() *core.StateSnapshot         { return nil }
 func (m *mockDriver) GetPlatformInfo() *core.PlatformInfo   { return m.platformInfo }
 func (m *mockDriver) SetFindTimeout(int)                    {}
 func (m *mockDriver) SetWaitForIdleTimeout(int) error       { return nil }
+func (m *mockDriver) SetContext(context.Context)             {}
 
 func TestResolveOutputDir_Default(t *testing.T) {
 	dir, err := resolveOutputDir("", false)

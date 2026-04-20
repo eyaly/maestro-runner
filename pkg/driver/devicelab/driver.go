@@ -66,6 +66,9 @@ type DeviceLabClient interface {
 
 	// Settings
 	SetAppiumSettings(settings map[string]interface{}) error
+
+	// Settle detection
+	WaitForSettle(timeoutMs, quietMs int) (bool, error)
 }
 
 // Driver implements core.Driver using the DeviceLab Android Driver.
@@ -73,6 +76,9 @@ type Driver struct {
 	client DeviceLabClient
 	info   *core.PlatformInfo
 	device ShellExecutor // for ADB commands (fallback)
+
+	// Parent context for element-finding operations (nil = context.Background())
+	ctx context.Context
 
 	// Timeouts (0 = use defaults)
 	findTimeout         int // ms, for required elements
@@ -102,6 +108,11 @@ func New(client DeviceLabClient, info *core.PlatformInfo, device ShellExecutor) 
 		info:   info,
 		device: device,
 	}
+}
+
+// WaitForSettle delegates to the on-device agent's tree-comparison settle detection.
+func (d *Driver) WaitForSettle(timeoutMs, quietMs int) (bool, error) {
+	return d.client.WaitForSettle(timeoutMs, quietMs)
 }
 
 // SetCDPStateFunc sets the function used to retrieve real-time CDP socket state
@@ -138,6 +149,20 @@ func (d *Driver) screenSize() (int, int, error) {
 		return d.info.ScreenWidth, d.info.ScreenHeight, nil
 	}
 	return 0, 0, fmt.Errorf("screen dimensions not available")
+}
+
+// SetContext sets the parent context for element-finding operations.
+func (d *Driver) SetContext(ctx context.Context) {
+	d.ctx = ctx
+}
+
+// parentContext returns the parent context for element-finding operations.
+// Returns context.Background() if no context was set.
+func (d *Driver) parentContext() context.Context {
+	if d.ctx != nil {
+		return d.ctx
+	}
+	return context.Background()
 }
 
 // SetFindTimeout sets the timeout for finding required elements.
@@ -539,7 +564,7 @@ func (d *Driver) findElementForTap(sel flow.Selector, optional bool, stepTimeout
 	// For relative selectors (below, above, etc.), use page source which handles them correctly
 	if sel.HasRelativeSelector() {
 		timeout := d.calculateTimeout(optional, stepTimeoutMs)
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(d.parentContext(), timeout)
 		defer cancel()
 		return d.findElementRelativeWithContext(ctx, sel)
 	}
@@ -558,7 +583,7 @@ func (d *Driver) findElementForTap(sel flow.Selector, optional bool, stepTimeout
 	// Non-clickable strategies first, then clickable fallback
 	if sel.Text != "" {
 		timeout := d.calculateTimeout(optional, stepTimeoutMs)
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(d.parentContext(), timeout)
 		defer cancel()
 		return d.findElementDirectWithContext(ctx, sel)
 	}
@@ -570,26 +595,27 @@ func (d *Driver) findElementForTap(sel flow.Selector, optional bool, stepTimeout
 // findElementDirectWithContext finds an element for tap using only UiAutomator strategies.
 // Non-clickable strategies first (fastest match), then clickable fallback. No page source.
 func (d *Driver) findElementDirectWithContext(ctx context.Context, sel flow.Selector) (*uiautomator2.Element, *core.ElementInfo, error) {
-	// Non-clickable first: finds element in 1 round-trip when it exists.
-	// Clickable strategies appended as fallback for disambiguation.
-	allStrategies, _ := buildSelectors(sel, 0)
+	// Clickable first: for tap commands, prefer buttons over labels.
+	// General strategies as fallback when no clickable element matches.
 	clickableStrategies, _ := buildClickableOnlyStrategies(sel)
-	combined := append(allStrategies, clickableStrategies...)
+	allStrategies, _ := buildSelectors(sel, 0)
+	combined := append(clickableStrategies, allStrategies...)
 
-	// When text triggers regex detection, also add literal textContains/descriptionContains
+	// When text triggers regex detection, also add literal textMatches
 	// as fallback. Handles false positives like "alice@example.com (locked out)" where
 	// parentheses trigger regex detection but the text is actually literal.
 	if looksLikeRegex(sel.Text) {
 		escaped := escapeUIAutomatorString(sel.Text)
 		stateFilters := buildStateFilters(sel)
+		pattern := `(?is).*\Q` + escaped + `\E.*`
 		combined = append(combined,
 			LocatorStrategy{
 				Strategy: uiautomator2.StrategyUIAutomator,
-				Value:    `new UiSelector().textContains("` + escaped + `")` + stateFilters,
+				Value:    `new UiSelector().textMatches("` + pattern + `")` + stateFilters,
 			},
 			LocatorStrategy{
 				Strategy: uiautomator2.StrategyUIAutomator,
-				Value:    `new UiSelector().descriptionContains("` + escaped + `")` + stateFilters,
+				Value:    `new UiSelector().descriptionMatches("` + pattern + `")` + stateFilters,
 			},
 		)
 	}
@@ -641,7 +667,9 @@ func buildClickableOnlyStrategies(sel flow.Selector) ([]LocatorStrategy, error) 
 
 	if sel.Text != "" {
 		escaped := escapeUIAutomatorString(sel.Text)
-		// Always try textContains/descriptionContains first (no regex needed)
+		// Case-sensitive text/description/hint first, then case-insensitive fallback.
+		// hintContains is a DeviceLab-agent extension — matches EditText android:hint
+		// placeholder so "tapOn: 'Email'" finds an empty field by its hint text.
 		strategies = append(strategies, LocatorStrategy{
 			Strategy: uiautomator2.StrategyUIAutomator,
 			Value:    `new UiSelector().textContains("` + escaped + `").clickable(true)` + stateFilters,
@@ -649,6 +677,23 @@ func buildClickableOnlyStrategies(sel flow.Selector) ([]LocatorStrategy, error) 
 		strategies = append(strategies, LocatorStrategy{
 			Strategy: uiautomator2.StrategyUIAutomator,
 			Value:    `new UiSelector().descriptionContains("` + escaped + `").clickable(true)` + stateFilters,
+		})
+		strategies = append(strategies, LocatorStrategy{
+			Strategy: uiautomator2.StrategyUIAutomator,
+			Value:    `new UiSelector().hintContains("` + escaped + `").clickable(true)` + stateFilters,
+		})
+		ciPattern := `(?is).*\Q` + escaped + `\E.*`
+		strategies = append(strategies, LocatorStrategy{
+			Strategy: uiautomator2.StrategyUIAutomator,
+			Value:    `new UiSelector().textMatches("` + ciPattern + `").clickable(true)` + stateFilters,
+		})
+		strategies = append(strategies, LocatorStrategy{
+			Strategy: uiautomator2.StrategyUIAutomator,
+			Value:    `new UiSelector().descriptionMatches("` + ciPattern + `").clickable(true)` + stateFilters,
+		})
+		strategies = append(strategies, LocatorStrategy{
+			Strategy: uiautomator2.StrategyUIAutomator,
+			Value:    `new UiSelector().hintMatches("` + ciPattern + `").clickable(true)` + stateFilters,
 		})
 		// Fall back to regex match (case-insensitive) for partial/pattern matches
 		if looksLikeRegex(sel.Text) {
@@ -675,7 +720,7 @@ func buildClickableOnlyStrategies(sel flow.Selector) ([]LocatorStrategy, error) 
 // findElementWithOptions is the internal implementation with clickable preference option.
 func (d *Driver) findElementWithOptions(sel flow.Selector, optional bool, stepTimeoutMs int, preferClickable bool, fastMode bool) (*uiautomator2.Element, *core.ElementInfo, error) {
 	timeout := d.calculateTimeout(optional, stepTimeoutMs)
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(d.parentContext(), timeout)
 	defer cancel()
 
 	return d.findElementWithContext(ctx, sel, preferClickable, fastMode)
@@ -1314,10 +1359,12 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 		})
 	}
 
-	// Text-based selector
+	// Text-based selector: case-sensitive first, case-insensitive fallback.
+	// hintContains / hintMatches are DeviceLab-agent extensions — match EditText
+	// android:hint placeholder so "tapOn: 'Email'" finds an empty field by hint.
 	if sel.Text != "" {
 		escaped := escapeUIAutomatorString(sel.Text)
-		// Always try textContains/descriptionContains first (no regex needed, handles special chars)
+		ciPattern := `(?is).*\Q` + escaped + `\E.*`
 		if preferClickable {
 			strategies = append(strategies, LocatorStrategy{
 				Strategy: uiautomator2.StrategyUIAutomator,
@@ -1327,6 +1374,10 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 				Strategy: uiautomator2.StrategyUIAutomator,
 				Value:    `new UiSelector().descriptionContains("` + escaped + `").clickable(true)` + stateFilters,
 			})
+			strategies = append(strategies, LocatorStrategy{
+				Strategy: uiautomator2.StrategyUIAutomator,
+				Value:    `new UiSelector().hintContains("` + escaped + `").clickable(true)` + stateFilters,
+			})
 		}
 		strategies = append(strategies, LocatorStrategy{
 			Strategy: uiautomator2.StrategyUIAutomator,
@@ -1335,6 +1386,37 @@ func buildSelectorsWithOptions(sel flow.Selector, timeoutMs int, preferClickable
 		strategies = append(strategies, LocatorStrategy{
 			Strategy: uiautomator2.StrategyUIAutomator,
 			Value:    `new UiSelector().descriptionContains("` + escaped + `")` + stateFilters,
+		})
+		strategies = append(strategies, LocatorStrategy{
+			Strategy: uiautomator2.StrategyUIAutomator,
+			Value:    `new UiSelector().hintContains("` + escaped + `")` + stateFilters,
+		})
+		// Case-insensitive fallback
+		if preferClickable {
+			strategies = append(strategies, LocatorStrategy{
+				Strategy: uiautomator2.StrategyUIAutomator,
+				Value:    `new UiSelector().textMatches("` + ciPattern + `").clickable(true)` + stateFilters,
+			})
+			strategies = append(strategies, LocatorStrategy{
+				Strategy: uiautomator2.StrategyUIAutomator,
+				Value:    `new UiSelector().descriptionMatches("` + ciPattern + `").clickable(true)` + stateFilters,
+			})
+			strategies = append(strategies, LocatorStrategy{
+				Strategy: uiautomator2.StrategyUIAutomator,
+				Value:    `new UiSelector().hintMatches("` + ciPattern + `").clickable(true)` + stateFilters,
+			})
+		}
+		strategies = append(strategies, LocatorStrategy{
+			Strategy: uiautomator2.StrategyUIAutomator,
+			Value:    `new UiSelector().textMatches("` + ciPattern + `")` + stateFilters,
+		})
+		strategies = append(strategies, LocatorStrategy{
+			Strategy: uiautomator2.StrategyUIAutomator,
+			Value:    `new UiSelector().descriptionMatches("` + ciPattern + `")` + stateFilters,
+		})
+		strategies = append(strategies, LocatorStrategy{
+			Strategy: uiautomator2.StrategyUIAutomator,
+			Value:    `new UiSelector().hintMatches("` + ciPattern + `")` + stateFilters,
 		})
 		// Fall back to regex match (case-insensitive) with proper escaping
 		if looksLikeRegex(sel.Text) {

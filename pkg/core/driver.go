@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"time"
 
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
@@ -33,6 +34,11 @@ type Driver interface {
 	// 0 = disabled, >0 = wait up to N ms for device to be idle.
 	// This is used by waitForIdleTimeout in flow config.
 	SetWaitForIdleTimeout(ms int) error
+
+	// SetContext sets the parent context for element-finding operations.
+	// When set, driver polling loops use this as the parent context so that
+	// external cancellation (e.g. runFlow timeout) can interrupt them.
+	SetContext(ctx context.Context)
 }
 
 // CommandResult represents the outcome of executing a single command

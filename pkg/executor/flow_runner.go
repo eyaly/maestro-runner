@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
@@ -31,6 +32,10 @@ type FlowRunner struct {
 	stepsSkipped int
 	// Sub-command tracking for compound steps (runFlow, repeat, retry)
 	subCommands []report.Command
+	// Effective wait-for-idle timeout (0 = disabled, used to skip settle)
+	waitForIdleTimeout int
+	// Active runFlow timeout label (e.g. "3s") for enriching sub-step errors
+	runFlowTimeout string
 }
 
 // Run executes the flow and returns the result.
@@ -47,6 +52,9 @@ func (fr *FlowRunner) Run() FlowResult {
 	// Initialize script engine
 	fr.script = NewScriptEngine()
 	defer fr.script.Close()
+
+	// Set parent context on driver so element-finding respects cancellation
+	fr.driver.SetContext(fr.ctx)
 
 	// Import system environment variables
 	fr.script.ImportSystemEnv()
@@ -74,7 +82,10 @@ func (fr *FlowRunner) Run() FlowResult {
 	if appID := fr.flow.Config.EffectiveAppID(); appID != "" {
 		fr.script.SetVariable("APP_ID", appID)
 	}
-	fr.script.SetVariables(fr.flow.Config.Env)
+	// Expand flow config env values to support ${VAR || "default"} syntax
+	for k, v := range fr.flow.Config.Env {
+		fr.script.SetVariable(k, fr.script.ExpandVariables(v))
+	}
 
 	// Apply commandTimeout if specified - overrides driver's default find timeout
 	if fr.flow.Config.CommandTimeout > 0 {
@@ -89,6 +100,7 @@ func (fr *FlowRunner) Run() FlowResult {
 	if fr.flow.Config.WaitForIdleTimeout != nil {
 		waitForIdleTimeout = *fr.flow.Config.WaitForIdleTimeout // flow override (highest priority)
 	}
+	fr.waitForIdleTimeout = waitForIdleTimeout
 	if err := fr.driver.SetWaitForIdleTimeout(waitForIdleTimeout); err != nil {
 		// Log warning but continue - some drivers don't support this
 		_ = err // ignore error, just continue
@@ -626,6 +638,23 @@ func (fr *FlowRunner) executeRunFlow(step *flow.RunFlowStep) *core.CommandResult
 		}
 	}
 
+	// Apply runFlow timeout if specified
+	if step.TimeoutMs > 0 {
+		timeout := time.Duration(step.TimeoutMs) * time.Millisecond
+		ctx, cancel := context.WithTimeout(fr.ctx, timeout)
+		defer cancel()
+		origCtx := fr.ctx
+		origTimeout := fr.runFlowTimeout
+		fr.ctx = ctx
+		fr.runFlowTimeout = timeout.String()
+		fr.driver.SetContext(ctx)
+		defer func() {
+			fr.ctx = origCtx
+			fr.runFlowTimeout = origTimeout
+			fr.driver.SetContext(origCtx)
+		}()
+	}
+
 	// Report nested flow start
 	if fr.config.OnNestedFlowStart != nil && step.File != "" {
 		fr.config.OnNestedFlowStart(fr.depth+1, "Run "+step.File)
@@ -638,12 +667,28 @@ func (fr *FlowRunner) executeRunFlow(step *flow.RunFlowStep) *core.CommandResult
 	// Apply env variables with restore
 	defer fr.script.withEnvVars(step.Env)()
 
+	// Format timeout limit for error messages
+	timeoutLimit := ""
+	if step.TimeoutMs > 0 {
+		timeoutLimit = (time.Duration(step.TimeoutMs) * time.Millisecond).String()
+	}
+
 	// Execute inline steps if present
 	if len(step.Steps) > 0 {
+		var lastStep string
 		for _, nestedStep := range step.Steps {
+			if fr.ctx.Err() != nil {
+				msg := fmt.Sprintf("runFlow timed out (%s timeout) — last completed: %s", timeoutLimit, lastStep)
+				return &core.CommandResult{
+					Success: false,
+					Error:   fmt.Errorf("%s", msg),
+					Message: msg,
+				}
+			}
+			lastStep = nestedStep.Describe()
 			result := fr.executeNestedStep(nestedStep)
 			if !result.Success && !nestedStep.IsOptional() {
-				return result
+				return fr.wrapRunFlowTimeout(result, step, lastStep, timeoutLimit)
 			}
 		}
 		return &core.CommandResult{
@@ -671,7 +716,62 @@ func (fr *FlowRunner) executeRunFlow(step *flow.RunFlowStep) *core.CommandResult
 		}
 	}
 
-	return fr.executeSubFlow(*subFlow)
+	result := fr.executeSubFlow(*subFlow)
+	if !result.Success {
+		return fr.wrapRunFlowTimeout(result, step, "", timeoutLimit)
+	}
+	return result
+}
+
+// wrapRunFlowTimeout replaces cryptic context errors with a clear timeout message
+// when a runFlow step fails due to its timeout expiring.
+func (fr *FlowRunner) wrapRunFlowTimeout(result *core.CommandResult, step *flow.RunFlowStep, lastStep, timeoutLimit string) *core.CommandResult {
+	if timeoutLimit == "" || fr.ctx.Err() == nil {
+		return result // not a timeout — return original error
+	}
+
+	// Build informative message: include timeout value, flow file, and what was running
+	var msg string
+	if step.File != "" {
+		msg = fmt.Sprintf("runFlow '%s' timed out (%s timeout)", step.File, timeoutLimit)
+	} else {
+		msg = fmt.Sprintf("runFlow timed out (%s timeout)", timeoutLimit)
+	}
+	if lastStep != "" {
+		msg += fmt.Sprintf(" while executing: %s", lastStep)
+	}
+
+	return &core.CommandResult{
+		Success: false,
+		Error:   fmt.Errorf("%s", msg),
+		Message: msg,
+	}
+}
+
+// enrichTimeoutError replaces cryptic "context deadline exceeded" in sub-step errors
+// with a message that references the active runFlow timeout.
+func (fr *FlowRunner) enrichTimeoutError(result *core.CommandResult) *core.CommandResult {
+	timeout := fr.runFlowTimeout
+	enriched := *result // shallow copy
+
+	reason := fmt.Sprintf("runFlow timeout (%s) exceeded", timeout)
+
+	if enriched.Error != nil {
+		orig := enriched.Error.Error()
+		// Replace the cryptic Go context error with timeout context
+		cleaned := strings.ReplaceAll(orig, "context deadline exceeded", reason)
+		if cleaned == orig {
+			// No replacement happened — append the timeout info
+			cleaned = orig + " (" + reason + ")"
+		}
+		enriched.Error = fmt.Errorf("%s", cleaned)
+	}
+
+	if enriched.Message != "" {
+		enriched.Message = strings.ReplaceAll(enriched.Message, "context deadline exceeded", reason)
+	}
+
+	return &enriched
 }
 
 // executeNestedStep executes a step without report tracking (for nested execution).
@@ -805,6 +905,11 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 
 	duration := time.Since(start).Milliseconds()
 
+	// Enrich sub-step errors with runFlow timeout context
+	if !result.Success && fr.runFlowTimeout != "" && fr.ctx.Err() != nil {
+		result = fr.enrichTimeoutError(result)
+	}
+
 	// Track nested step counts (compound steps like runFlow/repeat/retry don't count themselves)
 	if !isCompoundStep {
 		if result.Success {
@@ -873,14 +978,20 @@ func (fr *FlowRunner) executeSubFlow(subFlow flow.Flow) *core.CommandResult {
 	defer fr.script.withEnvVars(subFlow.Config.Env)()
 
 	// Execute steps
+	var lastStepDesc string
 	for _, step := range subFlow.Steps {
 		if fr.ctx.Err() != nil {
+			msg := "Sub-flow cancelled"
+			if lastStepDesc != "" {
+				msg = fmt.Sprintf("Sub-flow cancelled after: %s", lastStepDesc)
+			}
 			return &core.CommandResult{
 				Success: false,
 				Error:   fr.ctx.Err(),
-				Message: "Sub-flow cancelled",
+				Message: msg,
 			}
 		}
+		lastStepDesc = step.Describe()
 
 		// Inject subflow's appId/url into app lifecycle steps (same as executeStep does for main flow)
 		switch s := step.(type) {

@@ -476,11 +476,12 @@ func conditionTimeout(cond flow.Condition, sel *flow.Selector) int {
 }
 
 // withEnvVars applies environment variables and returns a restore function.
+// Values are expanded through ExpandVariables to support ${VAR || "default"} syntax.
 func (se *ScriptEngine) withEnvVars(env map[string]string) func() {
 	oldVars := make(map[string]string)
 	for k, v := range env {
 		oldVars[k] = se.GetVariable(k)
-		se.SetVariable(k, v)
+		se.SetVariable(k, se.ExpandVariables(v))
 	}
 	return func() {
 		for k, v := range oldVars {

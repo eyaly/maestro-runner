@@ -258,23 +258,9 @@ func (d *Driver) inputText(step *flow.InputTextStep) *core.CommandResult {
 			return errorResult(err, fmt.Sprintf("Failed to input text: %v", err))
 		}
 	} else {
-		// Type into focused element
-		// First try WebDriver activeElement endpoint
-		active, err := d.client.ActiveElement()
-		if err != nil {
-			// Fallback: find element with focused=true via page source
-			focusedTrue := true
-			focusedSel := flow.Selector{Focused: &focusedTrue}
-			elem, _, findErr := d.findElement(focusedSel, false, 2000)
-			if findErr != nil {
-				return errorResult(err, "No focused element to type into")
-			}
-			if err := elem.SendKeys(text); err != nil {
-				return errorResult(err, fmt.Sprintf("Failed to input text: %v", err))
-			}
-			return successResult(fmt.Sprintf("Entered text: %s%s", text, unicodeWarning), nil)
-		}
-		if err := active.SendKeys(text); err != nil {
+		// No selector — send key events directly to whatever the OS has focused.
+		// Matches Maestro's behavior: pressKeyCode for each character.
+		if err := d.client.SendKeyActions(text); err != nil {
 			return errorResult(err, fmt.Sprintf("Failed to input text: %v", err))
 		}
 	}
@@ -494,58 +480,11 @@ func (d *Driver) swipe(step *flow.SwipeStep) *core.CommandResult {
 		}
 	}
 
-	// Get screen size
+	// No selector — use screen coordinates directly (matches Maestro behavior)
 	width, height, err := d.screenSize()
 	if err != nil {
 		return errorResult(err, "Failed to get screen size")
 	}
-
-	// No selector specified - try to find a scrollable element
-	// Wait up to 10 seconds for page to load and find scrollable
-	scrollableInfo, scrollableCount := d.findScrollableElement(10000)
-
-	// Print debug info about scrollable elements found
-	if scrollableInfo != nil {
-		b := scrollableInfo.Bounds
-		fmt.Printf("[swipe] Found %d scrollable(s), using: bounds=[%d,%d,%d,%d]\n",
-			scrollableCount, b.X, b.Y, b.Width, b.Height)
-
-		// Swipe within scrollable bounds using Maestro Android coordinates
-		var sX, sY, eX, eY int
-		switch direction {
-		case "up":
-			sX = b.X + b.Width*50/100
-			sY = b.Y + b.Height*50/100
-			eX = b.X + b.Width*50/100
-			eY = b.Y + b.Height*10/100
-		case "down":
-			sX = b.X + b.Width*50/100
-			sY = b.Y + b.Height*20/100
-			eX = b.X + b.Width*50/100
-			eY = b.Y + b.Height*90/100
-		case "left":
-			sX = b.X + b.Width*90/100
-			sY = b.Y + b.Height*50/100
-			eX = b.X + b.Width*10/100
-			eY = b.Y + b.Height*50/100
-		case "right":
-			sX = b.X + b.Width*10/100
-			sY = b.Y + b.Height*50/100
-			eX = b.X + b.Width*90/100
-			eY = b.Y + b.Height*50/100
-		default:
-			sX = b.X + b.Width*50/100
-			sY = b.Y + b.Height*50/100
-			eX = b.X + b.Width*50/100
-			eY = b.Y + b.Height*10/100
-		}
-
-		fmt.Printf("[swipe] Coords in scrollable: (%d,%d) → (%d,%d)\n", sX, sY, eX, eY)
-		return d.swipeWithAbsoluteCoords(sX, sY, eX, eY, step.Duration)
-	}
-
-	fmt.Printf("[swipe] No scrollable found, using screen coordinates (50%% center)\n")
-	// Fallback: Use coordinates starting from 50% center
 	return d.swipeWithMaestroCoordinates(direction, width, height, step.Duration)
 }
 
@@ -1483,7 +1422,7 @@ func (d *Driver) waitUntil(step *flow.WaitUntilStep) *core.CommandResult {
 		timeout = time.Duration(step.TimeoutMs) * time.Millisecond
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(d.parentContext(), timeout)
 	defer cancel()
 
 	// Determine selector for error messages

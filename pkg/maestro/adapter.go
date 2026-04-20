@@ -405,6 +405,26 @@ func (a *Adapter) SetAppiumSettings(settings map[string]interface{}) error {
 	return err
 }
 
+// WaitForSettle waits for the UI to settle using accessibility event tracking.
+// Returns true if settled within timeout, false if timed out.
+func (a *Adapter) WaitForSettle(timeoutMs, quietMs int) (bool, error) {
+	resp, err := a.client.Call("UI.waitForSettle", map[string]interface{}{
+		"timeout": timeoutMs,
+		"quiet":   quietMs,
+	})
+	if err != nil {
+		return false, err
+	}
+
+	var result struct {
+		Settled bool `json:"settled"`
+	}
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return false, err
+	}
+	return result.Settled, nil
+}
+
 // --- Session management ---
 
 // CreateSession creates a session on the driver.

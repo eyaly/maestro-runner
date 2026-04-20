@@ -1,6 +1,7 @@
 package flutter
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -28,6 +29,7 @@ func (m *mockDriver) GetState() *core.StateSnapshot          { return &core.Stat
 func (m *mockDriver) GetPlatformInfo() *core.PlatformInfo    { return &core.PlatformInfo{} }
 func (m *mockDriver) SetFindTimeout(ms int)                  {}
 func (m *mockDriver) SetWaitForIdleTimeout(ms int) error     { return nil }
+func (m *mockDriver) SetContext(context.Context)              {}
 
 func TestFlutterDriver_PassThrough_Success(t *testing.T) {
 	inner := &mockDriver{

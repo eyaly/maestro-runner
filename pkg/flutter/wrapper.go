@@ -36,11 +36,12 @@ type FlutterDriver struct {
 	client        *VMServiceClient
 	dev           DeviceExecutor
 	appID         string
-	socketPath    string // Unix socket path for VM Service forwarding (Android)
-	udid          string // iOS simulator UDID (empty for Android)
-	isIOS         bool   // true = iOS reconnection path
-	attempted     bool   // true after first discovery attempt (avoids retrying every step)
-	findTimeoutMs int    // current find timeout set by executor (0 = driver default)
+	socketPath    string          // Unix socket path for VM Service forwarding (Android)
+	udid          string          // iOS simulator UDID (empty for Android)
+	isIOS         bool            // true = iOS reconnection path
+	attempted     bool            // true after first discovery attempt (avoids retrying every step)
+	findTimeoutMs int             // current find timeout set by executor (0 = driver default)
+	ctx           context.Context // Parent context for element-finding operations (runFlow timeout)
 }
 
 // Wrap creates a FlutterDriver that wraps the given inner driver.
@@ -115,7 +116,7 @@ func (d *FlutterDriver) Execute(step flow.Step) *core.CommandResult {
 	// --- Parallel search: inner driver (1s polls) + Flutter (continuous goroutine) ---
 
 	// Start Flutter polling in background goroutine
-	searchCtx, searchCancel := context.WithTimeout(context.Background(), time.Duration(effectiveTimeout)*time.Millisecond)
+	searchCtx, searchCancel := context.WithTimeout(d.parentContext(), time.Duration(effectiveTimeout)*time.Millisecond)
 	flutterCh := make(chan *flutterSearchResult, 1)
 	go d.flutterPollLoop(searchCtx, sel, flutterCh)
 
@@ -125,6 +126,14 @@ func (d *FlutterDriver) Execute(step flow.Step) *core.CommandResult {
 	var result *core.CommandResult
 
 	for time.Now().Before(deadline) {
+		// Check if parent context (e.g. runFlow timeout) was cancelled
+		if err := d.parentContext().Err(); err != nil {
+			searchCancel()
+			<-flutterCh
+			d.inner.SetFindTimeout(d.findTimeoutMs)
+			return core.ErrorResult(fmt.Errorf("element %q not found: %w", sel.Describe(), err), "")
+		}
+
 		d.inner.SetFindTimeout(innerPollTimeout)
 		result = d.inner.Execute(step)
 
@@ -545,6 +554,17 @@ func (d *FlutterDriver) SetFindTimeout(ms int) {
 }
 func (d *FlutterDriver) SetWaitForIdleTimeout(ms int) error {
 	return d.inner.SetWaitForIdleTimeout(ms)
+}
+func (d *FlutterDriver) SetContext(ctx context.Context) {
+	d.ctx = ctx
+	d.inner.SetContext(ctx)
+}
+
+func (d *FlutterDriver) parentContext() context.Context {
+	if d.ctx != nil {
+		return d.ctx
+	}
+	return context.Background()
 }
 
 // --- Optional interface forwarding ---

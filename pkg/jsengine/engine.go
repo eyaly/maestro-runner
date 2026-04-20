@@ -442,8 +442,8 @@ func (e *Engine) ExpandVariables(text string) (string, error) {
 		// Extract expression
 		expr := result[idx+2 : end-1]
 
-		// Evaluate expression
-		value, err := e.EvalString(expr)
+		// Evaluate expression, auto-defining undefined variables on ReferenceError
+		value, err := e.evalWithUndefinedFallback(expr)
 		if err != nil {
 			// If evaluation fails, leave as-is or return error
 			start = end
@@ -456,6 +456,45 @@ func (e *Engine) ExpandVariables(text string) (string, error) {
 	}
 
 	return result, nil
+}
+
+// evalWithUndefinedFallback evaluates a JS expression, automatically defining
+// undefined variables to prevent ReferenceError. This matches Maestro's behavior
+// where undeclared variables are treated as undefined (falsy) rather than errors.
+// Supports patterns like: ${VAR || "default"}, ${VAR ?? "fallback"}
+func (e *Engine) evalWithUndefinedFallback(expr string) (string, error) {
+	const maxRetries = 10
+	for i := 0; i < maxRetries; i++ {
+		value, err := e.EvalString(expr)
+		if err == nil {
+			return value, nil
+		}
+		// Check if it's a ReferenceError for an undefined variable
+		varName := extractUndefinedVarName(err.Error())
+		if varName == "" {
+			return "", err // Not a ReferenceError, return original error
+		}
+		e.DefineUndefinedIfMissing(varName)
+	}
+	return "", fmt.Errorf("too many undefined variables in expression: %s", expr)
+}
+
+// extractUndefinedVarName extracts the variable name from a goja ReferenceError.
+// Example: "JS eval error: ReferenceError: APP_ID is not defined at <eval>:1:1(0)"
+// Returns "APP_ID", or empty string if not a ReferenceError.
+func extractUndefinedVarName(errMsg string) string {
+	const prefix = "ReferenceError: "
+	const suffix = " is not defined"
+	idx := strings.Index(errMsg, prefix)
+	if idx == -1 {
+		return ""
+	}
+	after := errMsg[idx+len(prefix):]
+	endIdx := strings.Index(after, suffix)
+	if endIdx == -1 {
+		return ""
+	}
+	return after[:endIdx]
 }
 
 // Close cleans up the engine (stops timers, etc.)

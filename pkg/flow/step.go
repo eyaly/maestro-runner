@@ -307,7 +307,7 @@ type AssertTrueStep struct {
 type Condition struct {
 	Visible    *Selector `yaml:"visible"`
 	NotVisible *Selector `yaml:"notVisible"`
-	Script     string    `yaml:"scriptCondition"`
+	Script     string    `yaml:"true"`
 	Platform   string    `yaml:"platform"`
 	Timeout    int       `yaml:"timeout"` // Timeout in ms for visible/notVisible checks
 }

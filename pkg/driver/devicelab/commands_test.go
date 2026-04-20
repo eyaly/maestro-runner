@@ -59,6 +59,7 @@ func (m *mockDeviceLabClient) ForceStop(string) error                         { 
 func (m *mockDeviceLabClient) ClearAppData(string) error                      { return nil }
 func (m *mockDeviceLabClient) GrantPermissions(string, []string) error        { return nil }
 func (m *mockDeviceLabClient) SetAppiumSettings(map[string]interface{}) error { return nil }
+func (m *mockDeviceLabClient) WaitForSettle(int, int) (bool, error)          { return true, nil }
 
 // Compile-time check
 var _ DeviceLabClient = (*mockDeviceLabClient)(nil)

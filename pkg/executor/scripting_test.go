@@ -322,6 +322,30 @@ func TestScriptEngine_withEnvVars(t *testing.T) {
 	}
 }
 
+func TestScriptEngine_withEnvVars_DefaultValues(t *testing.T) {
+	se := NewScriptEngine()
+	defer se.Close()
+
+	se.SetVariable("CLI_VAR", "from_cli")
+
+	// withEnvVars should expand ${VAR || "default"} syntax
+	restore := se.withEnvVars(map[string]string{
+		"APP_ID":  `${APP_ID || "com.example.default"}`,
+		"USER_ID": `${CLI_VAR || "fallback"}`,
+	})
+
+	// APP_ID was undefined, should get default
+	if got := se.GetVariable("APP_ID"); got != "com.example.default" {
+		t.Errorf("APP_ID = %q, want %q", got, "com.example.default")
+	}
+	// CLI_VAR was defined, should get its value
+	if got := se.GetVariable("USER_ID"); got != "from_cli" {
+		t.Errorf("USER_ID = %q, want %q", got, "from_cli")
+	}
+
+	restore()
+}
+
 func TestScriptEngine_GetOutput(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
