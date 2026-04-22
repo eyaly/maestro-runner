@@ -233,6 +233,10 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	case *flow.SetPermissionsStep:
 		result = d.setPermissions(s)
 
+	// Keychain
+	case *flow.ClearKeychainStep:
+		result = d.clearKeychain(s)
+
 	default:
 		result = &core.CommandResult{
 			Success: false,

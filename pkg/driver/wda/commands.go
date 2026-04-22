@@ -726,6 +726,15 @@ func (d *Driver) launchApp(step *flow.LaunchAppStep) *core.CommandResult {
 		wg.Wait()
 	}
 
+	// Reset simulator keychain if requested — after clearState so a reinstall
+	// can't race, before launch so the app starts with a clean keychain.
+	// No-op with a warning on real devices (keychain can't be reset there).
+	if step.ClearKeychain {
+		if r := d.resetKeychain(); !r.Success {
+			logger.Warn("launchApp: clearKeychain skipped: %s", r.Message)
+		}
+	}
+
 	if d.udid != "" {
 		d.alertAction = resolveAlertAction(permissions)
 	}
@@ -899,6 +908,33 @@ func (d *Driver) clearAppStateSimulator(bundleID string) *core.CommandResult {
 	}
 
 	return successResult(fmt.Sprintf("Cleared state for %s (uninstall+reinstall)", bundleID), nil)
+}
+
+// clearKeychain handles the standalone clearKeychain step. Unsupported on
+// real devices (iOS keychain is sandboxed and can't be reset via public API).
+func (d *Driver) clearKeychain(_ *flow.ClearKeychainStep) *core.CommandResult {
+	return d.resetKeychain()
+}
+
+// resetKeychain runs `xcrun simctl keychain <udid> reset` on the simulator.
+// Shared by the standalone step and the launchApp clearKeychain: true option.
+func (d *Driver) resetKeychain() *core.CommandResult {
+	if !d.info.IsSimulator {
+		return &core.CommandResult{
+			Success: false,
+			Error:   fmt.Errorf("clearKeychain is not supported on real iOS devices"),
+			Message: "clearKeychain requires an iOS Simulator — the iOS keychain is sandboxed on real devices and cannot be reset programmatically. Use clearState to reinstall the app, which drops its keychain entries.",
+		}
+	}
+	if d.udid == "" {
+		return errorResult(fmt.Errorf("simulator UDID required"), "clearKeychain requires a booted simulator")
+	}
+	cmd := exec.Command("xcrun", "simctl", "keychain", d.udid, "reset")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return errorResult(fmt.Errorf("simctl keychain reset failed: %w: %s", err, string(output)),
+			"Failed to reset simulator keychain")
+	}
+	return successResult("Simulator keychain reset", nil)
 }
 
 func (d *Driver) clearAppStateDevice(bundleID string) *core.CommandResult {
