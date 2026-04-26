@@ -7,6 +7,12 @@ package cloud
 
 import "sync"
 
+// Common metadata keys populated by Appium-backed cloud runs.
+const (
+	MetaAppiumURL = "appiumURL"
+	MetaSessionID = "sessionID"
+)
+
 // Provider abstracts cloud device provider operations.
 type Provider interface {
 	// Name returns the human-readable provider name (e.g., "Sauce Labs").

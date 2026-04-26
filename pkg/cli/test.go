@@ -1823,6 +1823,7 @@ func createAppiumDriver(cfg *RunConfig) (core.Driver, func(), error) {
 		cfg.CloudProvider = p
 		cfg.CloudMeta = make(map[string]string)
 		p.ExtractMeta(driver.SessionID(), driver.SessionCaps(), cfg.CloudMeta)
+		cfg.CloudMeta[cloud.MetaAppiumURL] = strings.TrimSpace(cfg.AppiumURL)
 		logger.Info("Cloud provider detected: %s", p.Name())
 	}
 
