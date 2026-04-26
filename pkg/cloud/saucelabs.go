@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -62,10 +63,14 @@ func (s *sauceLabs) OnFlowStart(meta map[string]string, flowIdx, totalFlows int,
 		return nil
 	}
 
-	if err := callSauceExecuteScriptContext(appiumURL, sessionID, flowIdx, totalFlows, file); err != nil {
+	yamlForContext := strings.TrimSpace(file)
+	if yamlForContext != "" {
+		yamlForContext = filepath.Base(yamlForContext)
+	}
+	if err := callSauceExecuteScriptContext(appiumURL, sessionID, flowIdx, totalFlows, yamlForContext); err != nil {
 		return fmt.Errorf("call sauce executeScript: %w", err)
 	}
-	logger.Info(`Sauce Labs OnFlowStart: executeScript called with context for [%d/%d] %s`, flowIdx+1, totalFlows, file)
+	logger.Info("Sauce Labs OnFlowStart: executeScript sauce:context (yaml file) for [%d/%d]: %q", flowIdx+1, totalFlows, yamlForContext)
 	return nil
 }
 
@@ -91,17 +96,29 @@ func (s *sauceLabs) ReportResult(appiumURL string, meta map[string]string, resul
 		return err
 	}
 
-	var endpoint string
-	switch meta["type"] {
-	case "rdc":
-		endpoint = strings.TrimSuffix(apiBase, "/") + "/v1/rdc/jobs/" + url.PathEscape(jobID)
-	case "vms":
-		endpoint = strings.TrimSuffix(apiBase, "/") + "/rest/v1/" + url.PathEscape(username) + "/jobs/" + url.PathEscape(jobID)
-	default:
-		return fmt.Errorf("unknown Sauce Labs job type: %s", meta["type"])
+	endpoint, err := sauceJobRESTURL(apiBase, meta["type"], jobID, username)
+	if err != nil {
+		return err
 	}
 
-	return updateJob(endpoint, username, accessKey, result.Passed)
+	// GET same job URL used for RDC ("/v1/rdc/...") or VMS ("/rest/v1/.../jobs/...") and read "name" from the JSON.
+	nameFromJob := ""
+	if n, err := getSauceJobNameFromEndpoint(endpoint, username, accessKey); err != nil {
+		logger.Warn("Sauce Labs ReportResult: job GET (for name): %v", err)
+	} else {
+		nameFromJob = n
+		logger.Info("Sauce Labs ReportResult: name from job GET response: %q", nameFromJob)
+	}
+
+	putName := ""
+	if shouldSetJobNameFromFlowYAML(nameFromJob) {
+		if stem := firstFlowFileStemWithoutYAMLExt(result); stem != "" {
+			putName = stem
+			logger.Info("Sauce Labs ReportResult: will set name on job update to %q (from flow file, replacing empty/default)", putName)
+		}
+	}
+
+	return updateJob(endpoint, username, accessKey, result.Passed, putName)
 }
 
 // apiBaseFromAppiumURL returns the Sauce Labs REST API base URL.
@@ -122,6 +139,21 @@ func apiBaseFromAppiumURL(appiumURL string) (string, error) {
 		return "https://api.us-east-4.saucelabs.com", nil
 	default:
 		return "https://api.us-west-1.saucelabs.com", nil
+	}
+}
+
+// sauceJobRESTURL is the job resource URL used for RDC (GET/PUT) or VMS (GET/PUT).
+func sauceJobRESTURL(apiBase, jobType, jobID, username string) (string, error) {
+	base := strings.TrimSuffix(strings.TrimSpace(apiBase), "/")
+	escapedID := url.PathEscape(jobID)
+	escapedUser := url.PathEscape(username)
+	switch jobType {
+	case "rdc":
+		return base + "/v1/rdc/jobs/" + escapedID, nil
+	case "vms":
+		return base + "/rest/v1/" + escapedUser + "/jobs/" + escapedID, nil
+	default:
+		return "", fmt.Errorf("unknown Sauce Labs job type: %q", jobType)
 	}
 }
 
@@ -193,9 +225,113 @@ func jobUUIDFromSessionCaps(caps map[string]interface{}) string {
 	return ""
 }
 
-// updateJob sends a PUT request with {"passed": bool} to the given endpoint.
-func updateJob(endpoint, username, accessKey string, passed bool) error {
-	payload, err := json.Marshal(map[string]bool{"passed": passed})
+// getSauceJobNameFromEndpoint GETs a job (RDC or VMS path) and returns the "name" field from the JSON.
+func getSauceJobNameFromEndpoint(endpoint, username, accessKey string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", fmt.Errorf("build get request: %w", err)
+	}
+	req.SetBasicAuth(username, accessKey)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("http get: %w", err)
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			logger.Debug("sauce labs: close get job body: %v", err)
+		}
+	}()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("read body: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("status %d, body: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", fmt.Errorf("parse json: %w", err)
+	}
+	name := nameFromSauceGetJobResponse(parsed)
+	return name, nil
+}
+
+// nameFromSauceGetJobResponse returns the "name" field from Sauce job GET JSON (top-level or common wrappers).
+func nameFromSauceGetJobResponse(m map[string]interface{}) string {
+	if m == nil {
+		return ""
+	}
+	if s := stringField(m, "name"); s != "" {
+		return s
+	}
+	for _, k := range []string{"value", "job", "data"} {
+		if sub, ok := m[k].(map[string]interface{}); ok {
+			if s := stringField(sub, "name"); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+func stringField(m map[string]interface{}, key string) string {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
+const defaultSauceAppiumTestName = "Default Appium Test"
+
+// shouldSetJobNameFromFlowYAML is true when the job has no real name in Sauce
+// and we should send "name" from the flow file on the status PUT.
+func shouldSetJobNameFromFlowYAML(nameFromJob string) bool {
+	t := strings.TrimSpace(nameFromJob)
+	return t == "" || t == defaultSauceAppiumTestName
+}
+
+// firstFlowFileStemWithoutYAMLExt returns the first flow's file basename without .yaml or .yml.
+func firstFlowFileStemWithoutYAMLExt(result *TestResult) string {
+	if result == nil {
+		return ""
+	}
+	for _, f := range result.Flows {
+		p := strings.TrimSpace(f.File)
+		if p == "" {
+			continue
+		}
+		base := filepath.Base(p)
+		if ext := filepath.Ext(base); ext != "" {
+			if strings.EqualFold(ext, ".yaml") || strings.EqualFold(ext, ".yml") {
+				return base[:len(base)-len(ext)]
+			}
+			return strings.TrimSuffix(base, ext)
+		}
+		return base
+	}
+	return ""
+}
+
+// updateJob sends a PUT to the job endpoint. If putName is non-empty, the JSON
+// body includes "name" alongside "passed" (RDC and VMS job update).
+func updateJob(endpoint, username, accessKey string, passed bool, putName string) error {
+	reqBody := map[string]interface{}{"passed": passed}
+	if strings.TrimSpace(putName) != "" {
+		reqBody["name"] = strings.TrimSpace(putName)
+	}
+	payload, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("marshal body: %w", err)
 	}
@@ -221,16 +357,16 @@ func updateJob(endpoint, username, accessKey string, passed bool) error {
 		}
 	}()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("sauce labs api %s: status %d, body: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+		return fmt.Errorf("sauce labs api %s: status %d, body: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 	return nil
 }
 
 func callSauceExecuteScriptContext(appiumURL, sessionID string, flowIdx, totalFlows int, contextText string) error {
 	endpoint := strings.TrimSuffix(strings.TrimSpace(appiumURL), "/") + "/session/" + url.PathEscape(sessionID) + "/execute/sync"
-	contextMsg := fmt.Sprintf("▶ Start [%d/%d] %s", flowIdx+1, totalFlows, contextText)
+	contextMsg := fmt.Sprintf("- Start [%d/%d] %s", flowIdx+1, totalFlows, contextText)
 	payload := map[string]interface{}{
 		"script": "sauce:context= " + contextMsg,
 		"args":   []interface{}{},
@@ -259,9 +395,9 @@ func callSauceExecuteScriptContext(appiumURL, sessionID string, flowIdx, totalFl
 		}
 	}()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	execReadBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("sauce execute %s: status %d, body: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+		return fmt.Errorf("sauce execute %s: status %d, body: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(execReadBody)))
 	}
 	return nil
 }
