@@ -41,6 +41,7 @@ func (s *sauceLabs) ExtractMeta(sessionID string, caps map[string]interface{}, m
 		meta["type"] = "rdc"
 		meta["jobID"] = jobUUIDFromSessionCaps(caps)
 	}
+	logger.Info("*** Sauce Labs ExtractMeta: type=%q jobID=%q", meta["type"], meta["jobID"])
 }
 
 // OnRunStart is a no-op — Sauce Labs jobs are created server-side by the
@@ -82,6 +83,7 @@ func (s *sauceLabs) OnFlowEnd(meta map[string]string, result *FlowResult) error 
 
 func (s *sauceLabs) ReportResult(appiumURL string, meta map[string]string, result *TestResult) error {
 	jobID := strings.TrimSpace(meta["jobID"])
+	logger.Info("*** Sauce Labs ReportResult: starting with jobID=%q result=%+v", jobID, result)
 	if jobID == "" {
 		return fmt.Errorf("no job ID available")
 	}
