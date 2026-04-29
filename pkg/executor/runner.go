@@ -81,6 +81,10 @@ type FlowResult struct {
 	StepsPassed  int
 	StepsFailed  int
 	StepsSkipped int
+	// SessionID identifies the worker (Appium session) that ran this flow.
+	// Empty for sequential single-device runs; set by ParallelRunner so cloud
+	// providers can filter results to the worker that produced them.
+	SessionID string
 }
 
 // Runner orchestrates flow execution.
