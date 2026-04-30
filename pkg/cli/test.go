@@ -1687,14 +1687,23 @@ func executeAppiumParallel(cfg *RunConfig, count int, flows []flow.Flow) (*execu
 		return nil, err
 	}
 
-	// Report to cloud providers per-worker (each session = separate cloud job)
+	// Report to cloud providers per-worker (each session = separate cloud job).
+	// Each worker filters down to only the flows it actually ran, so the cloud
+	// dashboard's job page reflects that worker's slice of the run rather than
+	// the run-wide totals.
 	for i, cm := range cloudMetas {
 		if cm.provider == nil {
 			continue
 		}
-		// Collect flow results that ran on this worker
+		workerSessionID := workers[i].SessionID
+
 		var workerFlows []cloud.FlowResult
+		var passedCount, failedCount int
+		var durationMs int64
 		for _, f := range result.FlowResults {
+			if f.SessionID != workerSessionID {
+				continue
+			}
 			workerFlows = append(workerFlows, cloud.FlowResult{
 				Name:     f.Name,
 				File:     f.SourceFile,
@@ -1702,20 +1711,27 @@ func executeAppiumParallel(cfg *RunConfig, count int, flows []flow.Flow) (*execu
 				Duration: f.Duration,
 				Error:    f.Error,
 			})
+			durationMs += f.Duration
+			switch f.Status {
+			case report.StatusPassed:
+				passedCount++
+			case report.StatusFailed:
+				failedCount++
+			}
 		}
 		cloudResult := &cloud.TestResult{
-			Passed:      result.Status == report.StatusPassed,
-			Total:       result.TotalFlows,
-			PassedCount: result.PassedFlows,
-			FailedCount: result.FailedFlows,
-			Duration:    result.Duration,
+			Passed:      failedCount == 0 && len(workerFlows) > 0,
+			Total:       len(workerFlows),
+			PassedCount: passedCount,
+			FailedCount: failedCount,
+			Duration:    durationMs,
 			OutputDir:   cfg.OutputDir,
 			Flows:       workerFlows,
 		}
 		if err := cm.provider.ReportResult(cfg.AppiumURL, cm.meta, cloudResult); err != nil {
 			logger.Warn("[appium-%d] %s result reporting failed: %v", i+1, cm.provider.Name(), err)
 		} else {
-			logger.Info("[appium-%d] %s job updated: passed=%v", i+1, cm.provider.Name(), cloudResult.Passed)
+			logger.Info("[appium-%d] %s job updated: passed=%v (flows=%d)", i+1, cm.provider.Name(), cloudResult.Passed, len(workerFlows))
 		}
 	}
 
@@ -2287,12 +2303,26 @@ func createAppiumWorkers(cfg *RunConfig, count int) ([]executor.DeviceWorker, []
 		}
 	}
 
+	// Preserve the caller's Devices so we can swap in per-worker UDIDs and
+	// restore them at the end. When the user supplies len(Devices) >= count,
+	// we round-robin so each Appium session targets a distinct device. When
+	// fewer devices are configured (e.g. cloud mode where Appium picks), every
+	// session runs against the same caps.
+	originalDevices := cfg.Devices
+
 	for i := 0; i < count; i++ {
 		workerID := fmt.Sprintf("appium-%d", i+1)
 		printSetupStep(fmt.Sprintf("[%s] Creating Appium session...", workerID))
 
+		if len(originalDevices) >= count {
+			cfg.Devices = []string{originalDevices[i]}
+		} else {
+			cfg.Devices = originalDevices
+		}
+
 		driver, cleanup, err := createAppiumDriver(cfg)
 		if err != nil {
+			cfg.Devices = originalDevices
 			logger.Warn("Failed to create session for %s: %v", workerID, err)
 			cleanupAll()
 			return nil, nil, fmt.Errorf("failed to create %s: %w", workerID, err)
@@ -2304,24 +2334,54 @@ func createAppiumWorkers(cfg *RunConfig, count int) ([]executor.DeviceWorker, []
 			sessionID = appDrv.SessionID()
 		}
 
+		// Capture per-worker cloud metadata (each session = separate cloud job).
+		// Bound the closures below to *this* iteration's provider/meta.
+		workerProvider := cfg.CloudProvider
+		workerMeta := cfg.CloudMeta
+		workerName := workerID
+
+		var onFlowStart func(flowIdx, totalFlows int, name, file string)
+		var onFlowEnd func(name string, passed bool, durationMs int64, errMsg string)
+		if workerProvider != nil {
+			onFlowStart = func(flowIdx, totalFlows int, name, file string) {
+				if err := workerProvider.OnFlowStart(workerMeta, flowIdx, totalFlows, name, file); err != nil {
+					logger.Warn("[%s] %s OnFlowStart failed: %v", workerName, workerProvider.Name(), err)
+				}
+			}
+			onFlowEnd = func(name string, passed bool, durationMs int64, errMsg string) {
+				fr := &cloud.FlowResult{
+					Name:     name,
+					Passed:   passed,
+					Duration: durationMs,
+					Error:    errMsg,
+				}
+				if err := workerProvider.OnFlowEnd(workerMeta, fr); err != nil {
+					logger.Warn("[%s] %s OnFlowEnd failed: %v", workerName, workerProvider.Name(), err)
+				}
+			}
+		}
+
 		workers = append(workers, executor.DeviceWorker{
-			ID:        i,
-			DeviceID:  workerID,
-			SessionID: sessionID,
-			Driver:    driver,
-			Cleanup:   cleanup,
+			ID:          i,
+			DeviceID:    workerID,
+			SessionID:   sessionID,
+			Driver:      driver,
+			Cleanup:     cleanup,
+			OnFlowStart: onFlowStart,
+			OnFlowEnd:   onFlowEnd,
 		})
 		cleanups = append(cleanups, cleanup)
 
-		// Capture per-worker cloud metadata (each session = separate cloud job)
 		cloudMetas = append(cloudMetas, appiumWorkerMeta{
-			provider: cfg.CloudProvider,
-			meta:     cfg.CloudMeta,
+			provider: workerProvider,
+			meta:     workerMeta,
 		})
 		// Reset for next worker so createAppiumDriver detects fresh
 		cfg.CloudProvider = nil
 		cfg.CloudMeta = nil
 	}
+
+	cfg.Devices = originalDevices
 
 	return workers, cloudMetas, nil
 }

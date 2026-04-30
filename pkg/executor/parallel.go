@@ -18,6 +18,16 @@ type DeviceWorker struct {
 	SessionID string // Appium session ID (empty for non-Appium drivers)
 	Driver    core.Driver
 	Cleanup   func()
+
+	// OnFlowStart fires once per flow when this worker picks it up. Used by the
+	// CLI to invoke worker-scoped cloud-provider hooks (e.g. Sauce Labs
+	// per-flow context updates) with this worker's captured provider/meta.
+	OnFlowStart func(flowIdx, totalFlows int, name, file string)
+
+	// OnFlowEnd fires once per flow when this worker finishes it. Used by the
+	// CLI to invoke worker-scoped cloud-provider hooks with this worker's
+	// captured provider/meta.
+	OnFlowEnd func(name string, passed bool, durationMs int64, errMsg string)
 }
 
 // workItem represents a flow and its index in the original flow list.
@@ -167,15 +177,17 @@ func (pr *ParallelRunner) Run(ctx context.Context, flows []flow.Flow) (*RunResul
 				currentFlowFile = file
 
 				pr.outputMutex.Lock()
-				defer pr.outputMutex.Unlock()
 				fmt.Printf("[%d/%d] %s (%s) - %s⚡ Started%s on %s\n",
 					flowIdx+1, totalFlows, name, file, color(colorCyan), color(colorReset), deviceLabel)
+				pr.outputMutex.Unlock()
+
+				if w.OnFlowStart != nil {
+					w.OnFlowStart(flowIdx, totalFlows, name, file)
+				}
 			}
 
 			workerConfig.OnFlowEnd = func(name string, passed bool, durationMs int64, errMsg string) {
 				pr.outputMutex.Lock()
-				defer pr.outputMutex.Unlock()
-
 				status := "✓ Passed"
 				statusColor := color(colorGreen)
 				if !passed {
@@ -189,6 +201,11 @@ func (pr *ParallelRunner) Run(ctx context.Context, flows []flow.Flow) (*RunResul
 
 				if !passed && errMsg != "" {
 					fmt.Printf("  Error: %s\n", errMsg)
+				}
+				pr.outputMutex.Unlock()
+
+				if w.OnFlowEnd != nil {
+					w.OnFlowEnd(name, passed, durationMs, errMsg)
 				}
 			}
 
@@ -210,6 +227,9 @@ func (pr *ParallelRunner) Run(ctx context.Context, flows []flow.Flow) (*RunResul
 
 				// Execute flow
 				result := runner.executeFlow(ctx, item.flow, &flowDetails[item.index], indexWriter, item.index, totalFlows)
+				// Tag with the worker that produced it so cloud reporting can
+				// filter to only the flows this worker ran.
+				result.SessionID = w.SessionID
 
 				// Store result
 				resultsMu.Lock()
