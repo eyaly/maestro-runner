@@ -5827,17 +5827,19 @@ func TestDriverAlertActionField(t *testing.T) {
 	info := &core.PlatformInfo{Platform: "ios"}
 	driver := NewDriver(client, info, "test-udid")
 
-	if driver.alertAction != "" {
-		t.Errorf("Expected empty alertAction initially, got '%s'", driver.alertAction)
-	}
-
-	driver.alertAction = "accept"
+	// Default to "accept" so EnsureSession enables WDA's alerts monitor —
+	// matches Maestro's documented default of accepting all permissions.
 	if driver.alertAction != "accept" {
-		t.Errorf("Expected 'accept', got '%s'", driver.alertAction)
+		t.Errorf("Expected default alertAction 'accept', got '%s'", driver.alertAction)
 	}
 
 	driver.alertAction = "dismiss"
 	if driver.alertAction != "dismiss" {
 		t.Errorf("Expected 'dismiss', got '%s'", driver.alertAction)
+	}
+
+	driver.alertAction = ""
+	if driver.alertAction != "" {
+		t.Errorf("Expected '', got '%s'", driver.alertAction)
 	}
 }

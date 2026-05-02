@@ -41,9 +41,19 @@ type Driver struct {
 // NewDriver creates a new WDA driver.
 func NewDriver(client *Client, info *core.PlatformInfo, udid string) *Driver {
 	return &Driver{
-		client:       client,
-		info:         info,
-		udid:         udid,
+		client: client,
+		info:   info,
+		udid:   udid,
+		// Default to "accept" so the WDA alerts monitor is enabled at session
+		// creation. WDA only registers the monitor when defaultAlertAction is
+		// in the session capabilities (see FBSessionCommands.m); setting it
+		// later via /appium/settings just changes the value and cannot start
+		// the monitor retroactively. EnsureSession runs before any launchApp
+		// step, so without this default a real-device session would be created
+		// with no monitor and permission dialogs (e.g. notifications) would
+		// block the flow. launchApp may override based on explicit permissions.
+		// Matches Maestro's documented default of accepting all permissions.
+		alertAction:  "accept",
 		warnedFields: make(map[string]bool),
 	}
 }
