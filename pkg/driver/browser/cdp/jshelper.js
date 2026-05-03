@@ -1,28 +1,88 @@
 window.__maestro = {
+  // Tracks how many cross-origin iframes _collectDocs skipped on the most
+  // recent walk. Read by the Go side to surface a clear error when a query
+  // misses (so users know the cause is OOPIF, not a typo'd selector).
+  _lastCrossOriginSkips: 0,
+
+  // Collect the top document plus every same-origin iframe document reachable
+  // from it. Cross-origin iframes throw on contentDocument access — we swallow
+  // those errors so the query continues across the docs we *can* see, and
+  // count them so the caller can warn.
+  _collectDocs: function() {
+    var docs = [document];
+    var skipped = 0;
+    function walk(doc) {
+      var frames;
+      try { frames = doc.querySelectorAll('iframe, frame'); } catch (e) { return; }
+      for (var i = 0; i < frames.length; i++) {
+        var inner = null;
+        try { inner = frames[i].contentDocument; } catch (e) { skipped++; continue; }
+        if (inner === null) {
+          // Same-origin sandboxed iframe (sandbox without allow-same-origin)
+          // also returns null; treat as skipped so the user gets feedback.
+          skipped++;
+          continue;
+        }
+        if (docs.indexOf(inner) === -1) {
+          docs.push(inner);
+          walk(inner);
+        }
+      }
+    }
+    walk(document);
+    this._lastCrossOriginSkips = skipped;
+    return docs;
+  },
+
+  // Returns the number of cross-origin / sandboxed frames skipped during the
+  // most recent _collectDocs pass. Used by the Go finders to enrich
+  // not-found error messages.
+  getLastCrossOriginSkips: function() {
+    return this._lastCrossOriginSkips || 0;
+  },
+
   findByText: function(text) {
     var lower = text.toLowerCase();
-    var all = document.querySelectorAll('*');
+    var docs = this._collectDocs();
     var best = null, bestDepth = -1;
-    for (var i = 0; i < all.length; i++) {
-      var el = all[i];
-      var t = (el.textContent || '').trim().toLowerCase();
-      var label = (el.getAttribute('aria-label') || '').toLowerCase();
-      var ph = (el.getAttribute('placeholder') || '').toLowerCase();
-      if (t.indexOf(lower) !== -1 || label.indexOf(lower) !== -1 || ph.indexOf(lower) !== -1) {
-        var d = 0, n = el;
-        while (n.parentElement) { d++; n = n.parentElement; }
-        if (d > bestDepth) { best = el; bestDepth = d; }
+    for (var d = 0; d < docs.length; d++) {
+      var all;
+      try { all = docs[d].querySelectorAll('*'); } catch (e) { continue; }
+      for (var i = 0; i < all.length; i++) {
+        var el = all[i];
+        var t = (el.textContent || '').trim().toLowerCase();
+        var label = (el.getAttribute && (el.getAttribute('aria-label') || '')).toLowerCase();
+        var ph = (el.getAttribute && (el.getAttribute('placeholder') || '')).toLowerCase();
+        if (t.indexOf(lower) !== -1 || label.indexOf(lower) !== -1 || ph.indexOf(lower) !== -1) {
+          var depth = 0, n = el;
+          while (n.parentElement) { depth++; n = n.parentElement; }
+          if (depth > bestDepth) { best = el; bestDepth = depth; }
+        }
       }
     }
     if (!best) throw new Error('not found: ' + text);
     var p = best;
-    while (p && p !== document.body) {
+    var bestBody = (best.ownerDocument && best.ownerDocument.body) || document.body;
+    while (p && p !== bestBody) {
       var tag = p.tagName.toLowerCase();
       if (['a','button','input','select','textarea'].indexOf(tag) !== -1 ||
           p.getAttribute('role') === 'button' || p.getAttribute('tabindex') !== null) return p;
       p = p.parentElement;
     }
     return best;
+  },
+
+  // Find first element matching a CSS selector across same-origin frames.
+  // Used by Go finders as a fallback when the top-frame Rod lookup fails.
+  findByCSSAcrossFrames: function(selector) {
+    var docs = this._collectDocs();
+    for (var d = 0; d < docs.length; d++) {
+      try {
+        var el = docs[d].querySelector(selector);
+        if (el) return el;
+      } catch (e) {}
+    }
+    throw new Error('not found: ' + selector);
   },
 
   // Visibility check: returns true if element is visible in the page.
@@ -71,46 +131,73 @@ window.__maestro = {
     });
   },
 
-  // Find all elements matching a selector.
+  // Find all elements matching a selector across same-origin docs.
   _findMatchingElements: function(selectorType, selectorValue) {
+    var docs = this._collectDocs();
     var results = [];
+    function pushAll(nodes) {
+      for (var i = 0; i < nodes.length; i++) results.push(nodes[i]);
+    }
+    var escaped = (selectorValue || '').replace(/"/g, '\\"');
+
     switch (selectorType) {
       case 'css':
-        try { results = Array.from(document.querySelectorAll(selectorValue)); } catch(e) {}
+        for (var d = 0; d < docs.length; d++) {
+          try { pushAll(docs[d].querySelectorAll(selectorValue)); } catch (e) {}
+        }
         break;
       case 'id':
-        var el = document.getElementById(selectorValue);
-        if (el) results = [el];
+        for (var d = 0; d < docs.length; d++) {
+          try {
+            var el = docs[d].getElementById(selectorValue);
+            if (el) results.push(el);
+          } catch (e) {}
+        }
         break;
       case 'testId':
-        results = Array.from(document.querySelectorAll('[data-testid="' + selectorValue.replace(/"/g, '\\"') + '"]'));
+        for (var d = 0; d < docs.length; d++) {
+          try { pushAll(docs[d].querySelectorAll('[data-testid="' + escaped + '"]')); } catch (e) {}
+        }
         break;
       case 'placeholder':
-        results = Array.from(document.querySelectorAll('[placeholder="' + selectorValue.replace(/"/g, '\\"') + '"]'));
+        for (var d = 0; d < docs.length; d++) {
+          try { pushAll(docs[d].querySelectorAll('[placeholder="' + escaped + '"]')); } catch (e) {}
+        }
         break;
       case 'name':
-        results = Array.from(document.querySelectorAll('[name="' + selectorValue.replace(/"/g, '\\"') + '"]'));
+        for (var d = 0; d < docs.length; d++) {
+          try { pushAll(docs[d].querySelectorAll('[name="' + escaped + '"]')); } catch (e) {}
+        }
         break;
       case 'href':
-        results = Array.from(document.querySelectorAll('a[href*="' + selectorValue.replace(/"/g, '\\"') + '"]'));
+        for (var d = 0; d < docs.length; d++) {
+          try { pushAll(docs[d].querySelectorAll('a[href*="' + escaped + '"]')); } catch (e) {}
+        }
         break;
       case 'alt':
-        results = Array.from(document.querySelectorAll('[alt="' + selectorValue.replace(/"/g, '\\"') + '"]'));
+        for (var d = 0; d < docs.length; d++) {
+          try { pushAll(docs[d].querySelectorAll('[alt="' + escaped + '"]')); } catch (e) {}
+        }
         break;
       case 'title':
-        results = Array.from(document.querySelectorAll('[title="' + selectorValue.replace(/"/g, '\\"') + '"]'));
+        for (var d = 0; d < docs.length; d++) {
+          try { pushAll(docs[d].querySelectorAll('[title="' + escaped + '"]')); } catch (e) {}
+        }
         break;
       case 'text': {
         var lower = selectorValue.toLowerCase();
-        var all = document.querySelectorAll('*');
-        for (var i = 0; i < all.length; i++) {
-          var el = all[i];
-          var t = (el.textContent || '').trim().toLowerCase();
-          var label = (el.getAttribute('aria-label') || '').toLowerCase();
-          var ph = (el.getAttribute('placeholder') || '').toLowerCase();
-          if (t === lower || label === lower || ph === lower ||
-              t.indexOf(lower) !== -1 || label.indexOf(lower) !== -1 || ph.indexOf(lower) !== -1) {
-            results.push(el);
+        for (var d = 0; d < docs.length; d++) {
+          var all;
+          try { all = docs[d].querySelectorAll('*'); } catch (e) { continue; }
+          for (var i = 0; i < all.length; i++) {
+            var el = all[i];
+            var t = (el.textContent || '').trim().toLowerCase();
+            var label = (el.getAttribute('aria-label') || '').toLowerCase();
+            var ph = (el.getAttribute('placeholder') || '').toLowerCase();
+            if (t === lower || label === lower || ph === lower ||
+                t.indexOf(lower) !== -1 || label.indexOf(lower) !== -1 || ph.indexOf(lower) !== -1) {
+              results.push(el);
+            }
           }
         }
         results = this._filterToDeepest(results);
@@ -118,10 +205,13 @@ window.__maestro = {
       }
       case 'textContains': {
         var lower = selectorValue.toLowerCase();
-        var all = document.querySelectorAll('*');
-        for (var i = 0; i < all.length; i++) {
-          var t = (all[i].textContent || '').trim().toLowerCase();
-          if (t.indexOf(lower) !== -1) results.push(all[i]);
+        for (var d = 0; d < docs.length; d++) {
+          var all;
+          try { all = docs[d].querySelectorAll('*'); } catch (e) { continue; }
+          for (var i = 0; i < all.length; i++) {
+            var t = (all[i].textContent || '').trim().toLowerCase();
+            if (t.indexOf(lower) !== -1) results.push(all[i]);
+          }
         }
         results = this._filterToDeepest(results);
         break;
@@ -129,19 +219,24 @@ window.__maestro = {
       case 'textRegex': {
         try {
           var re = new RegExp(selectorValue, 'i');
-          var all = document.querySelectorAll('*');
-          for (var i = 0; i < all.length; i++) {
-            var t = (all[i].textContent || '').trim();
-            var label = all[i].getAttribute('aria-label') || '';
-            if (re.test(t) || re.test(label)) results.push(all[i]);
+          for (var d = 0; d < docs.length; d++) {
+            var all;
+            try { all = docs[d].querySelectorAll('*'); } catch (e) { continue; }
+            for (var i = 0; i < all.length; i++) {
+              var t = (all[i].textContent || '').trim();
+              var label = all[i].getAttribute('aria-label') || '';
+              if (re.test(t) || re.test(label)) results.push(all[i]);
+            }
           }
-        } catch(e) {}
+        } catch (e) {}
         results = this._filterToDeepest(results);
         break;
       }
       case 'role': {
-        var roleSelector = '[role="' + selectorValue.replace(/"/g, '\\"') + '"]';
-        results = Array.from(document.querySelectorAll(roleSelector));
+        var roleSelector = '[role="' + escaped + '"]';
+        for (var d = 0; d < docs.length; d++) {
+          try { pushAll(docs[d].querySelectorAll(roleSelector)); } catch (e) {}
+        }
         break;
       }
     }
