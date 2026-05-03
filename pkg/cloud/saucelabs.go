@@ -33,13 +33,19 @@ type sauceLabs struct{}
 func (s *sauceLabs) Name() string { return "Sauce Labs" }
 
 func (s *sauceLabs) ExtractMeta(sessionID string, caps map[string]interface{}, meta map[string]string) {
-	meta[MetaSessionID] = strings.TrimSpace(sessionID)
+	sid := strings.TrimSpace(sessionID)
+	meta[MetaSessionID] = sid
 	if capsDeviceNameIndicatesEmuSim(caps) {
 		meta["type"] = "vms"
-		meta["jobID"] = sessionID
+		meta["jobID"] = sid
 	} else {
 		meta["type"] = "rdc"
 		meta["jobID"] = jobUUIDFromSessionCaps(caps)
+		if meta["jobID"] == "" {
+			logger.Info("*** Sauce Labs ExtractMeta: no jobUuid in session caps; using session id as VMS job id")
+			meta["type"] = "vms"
+			meta["jobID"] = sid
+		}
 	}
 	logger.Info("*** Sauce Labs ExtractMeta: type=%q jobID=%q", meta["type"], meta["jobID"])
 }
@@ -368,7 +374,7 @@ func updateJob(endpoint, username, accessKey string, passed bool, putName string
 
 func callSauceExecuteScriptContext(appiumURL, sessionID string, flowIdx, totalFlows int, contextText string) error {
 	endpoint := strings.TrimSuffix(strings.TrimSpace(appiumURL), "/") + "/session/" + url.PathEscape(sessionID) + "/execute/sync"
-	contextMsg := fmt.Sprintf("- Start [%d/%d] %s", flowIdx+1, totalFlows, contextText)
+	contextMsg := fmt.Sprintf("- Starting Maestro test flow: %s", contextText)
 	payload := map[string]interface{}{
 		"script": "sauce:context= " + contextMsg,
 		"args":   []interface{}{},
