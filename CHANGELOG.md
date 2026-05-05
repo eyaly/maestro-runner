@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.13] - 2026-05-05
+
+### Added
+- **Same-origin iframe traversal on web** — text/CSS/ID/attribute selectors now
+  walk into same-origin `<iframe>` content (e.g. Flutter Web embedded under a
+  host page). Cross-origin / OOPIF iframes are still skipped, but the
+  not-found error now surfaces a clear `(skipped N cross-origin iframes — full
+  OOPIF support not implemented yet)` hint so users debugging a missing
+  selector can tell the cause is frame isolation, not a typo. Reported by
+  [@richjun](https://github.com/richjun) ([#65](https://github.com/devicelab-dev/maestro-runner/issues/65)).
+- **Mobile-style `index` selector on web** — `tapOn: { text: "Help", index: 1 }`
+  now picks the second match instead of being silently dropped as
+  unsupported. The web finder accepts both `index` (string, mobile-style) and
+  `nth` (int) via a single `EffectiveNth()` helper, so the same flow YAML
+  works across Android, iOS, and web. Reported by
+  [@richjun](https://github.com/richjun) ([#67](https://github.com/devicelab-dev/maestro-runner/issues/67)).
+- **Sauce Labs job context per flow** — the runner now posts
+  `sauce:context` to Sauce on every flow start so jobs surface the YAML
+  basename in the Sauce UI, and renames empty / "Default Appium Test" jobs
+  on completion using the first flow's filename. Real-device caps without
+  `appium:jobUuid` fall back to VMS + session id so REST status updates
+  still target the right job. Contributed by
+  [@eyaly](https://github.com/eyaly) ([#66](https://github.com/devicelab-dev/maestro-runner/pull/66)).
+
+### Fixed
+- **`onFlowStart` hook with default `appId`** — `launchApp` (and other app
+  lifecycle steps) inside `onFlowStart` / `onFlowComplete` now resolve the
+  flow's default `appId` the same way as top-level steps. Previously the
+  hook ran with an empty `AppID`, causing a silent no-op on Android. Fixes
+  [#62](https://github.com/devicelab-dev/maestro-runner/issues/62), reported
+  by [@zcsteele](https://github.com/zcsteele).
+- **`copyTextFrom` on Appium 3.x** — stop pushing the captured text to the
+  device clipboard via `POST /appium/device/set_clipboard`, which Appium 3
+  returns 404 for. The runner already keeps the value in memory (matching
+  Maestro's design) so `pasteText` continues to work. Fixes
+  [#61](https://github.com/devicelab-dev/maestro-runner/issues/61), reported
+  by [@kavithamahesh](https://github.com/kavithamahesh).
+- **iOS permission dialogs blocking real-device flows** — WDA's alerts
+  monitor only registers when `defaultAlertAction` is in the session-creation
+  capabilities; the runner now defaults to `accept` so notification (and
+  other) permission dialogs auto-dismiss out of the box. Fixes
+  [#64](https://github.com/devicelab-dev/maestro-runner/issues/64), reported
+  by [@j-ezeh](https://github.com/j-ezeh).
+- **assertVisible silently wrong for state filters / nth / role** — the JS
+  fast path bypassed several capabilities the Go finder already implemented,
+  so selectors with `enabled` / `checked` / `focused` / `nth` / `role` /
+  ID-cascade hit the fast path and produced wrong answers. Centralised
+  routing now sends those selectors to the Go finder; the JS path's `id`
+  case also runs the same `data-testid` / `name` / `aria-label` cascade.
+
+### Contributors
+
+[@richjun](https://github.com/richjun)
+1. Reported same-origin iframe selector failures with Flutter Web ([#65](https://github.com/devicelab-dev/maestro-runner/issues/65))
+2. Reported `index` selector being silently dropped on web ([#67](https://github.com/devicelab-dev/maestro-runner/issues/67))
+
+[@zcsteele](https://github.com/zcsteele)
+1. Reported `onFlowStart` hook unable to reference default `appId` ([#62](https://github.com/devicelab-dev/maestro-runner/issues/62))
+
+[@kavithamahesh](https://github.com/kavithamahesh)
+1. Reported `copyTextFrom` failing on Appium 3.x with 404 ([#61](https://github.com/devicelab-dev/maestro-runner/issues/61))
+
+[@j-ezeh](https://github.com/j-ezeh)
+1. Reported iOS permission dialogs not auto-accepted on real devices ([#64](https://github.com/devicelab-dev/maestro-runner/issues/64))
+
+[@eyaly](https://github.com/eyaly)
+1. Improved Sauce Labs job naming + per-flow context ([#66](https://github.com/devicelab-dev/maestro-runner/pull/66))
+
 ## [1.1.12] - 2026-04-22
 
 ### Added
