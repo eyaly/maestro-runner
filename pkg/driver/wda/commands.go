@@ -1102,10 +1102,7 @@ func (d *Driver) openLink(step *flow.OpenLinkStep) *core.CommandResult {
 		return errorResult(fmt.Errorf("no link specified"), "No link to open")
 	}
 
-	// Use WDA deep link - works for both simulator and real device
-	// Note: browser parameter would require launching Safari explicitly
-	// WDA's DeepLink uses the system handler which respects app associations
-	if err := d.client.DeepLink(link); err != nil {
+	if err := d.openURL(link); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to open link: %s", link))
 	}
 
@@ -1116,9 +1113,31 @@ func (d *Driver) openLink(step *flow.OpenLinkStep) *core.CommandResult {
 
 	msg := fmt.Sprintf("Opened link: %s", link)
 	if step.Browser != nil && *step.Browser {
-		msg += " (browser flag set, but WDA uses system default handler)"
+		msg += " (browser flag set, but the system default handler is used)"
 	}
 	return successResult(msg, nil)
+}
+
+// openURL dispatches a URL to the iOS device.
+//
+//   - Simulators: shell out to `xcrun simctl openurl <udid> <url>`. Bypasses
+//     WDA entirely so deep links keep working even when the user-installed
+//     WDA build (e.g. via `maestro-runner wda update` on a different version)
+//     has dropped or relocated the `/url` route. Matches Maestro CLI's
+//     behaviour and avoids the version-coupling between maestro-runner and
+//     the WebDriverAgent endpoint shape.
+//   - Real devices: continue using the WDA `/url` POST. simctl doesn't reach
+//     real devices, and there's no equivalent host-side primitive for
+//     deep-link delivery.
+func (d *Driver) openURL(url string) error {
+	if d.info != nil && d.info.IsSimulator && d.udid != "" {
+		cmd := exec.Command("xcrun", "simctl", "openurl", d.udid, url)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("simctl openurl: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+		return nil
+	}
+	return d.client.DeepLink(url)
 }
 
 func (d *Driver) openBrowser(step *flow.OpenBrowserStep) *core.CommandResult {
@@ -1127,8 +1146,7 @@ func (d *Driver) openBrowser(step *flow.OpenBrowserStep) *core.CommandResult {
 		return errorResult(fmt.Errorf("no URL specified"), "No URL to open")
 	}
 
-	// Use WDA deep link - opens in Safari for http/https URLs
-	if err := d.client.DeepLink(url); err != nil {
+	if err := d.openURL(url); err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to open browser: %s", url))
 	}
 
