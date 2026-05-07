@@ -198,6 +198,131 @@ func TestScriptEngine_RunScript_Error(t *testing.T) {
 	}
 }
 
+// --- Regression tests for issue #70: output mutations + scope reuse ---
+
+// TestScriptEngine_RunScript_OutputArrayPushPersists guards Bug B from #70:
+// `output.list.push(...)` mutations must persist across reads, both within
+// the same script and across consecutive RunScript calls. Before the fix,
+// the `output` global was a Goja proxy over the Go map and exported nested
+// values as fresh wrappers each read, silently dropping in-place mutations.
+func TestScriptEngine_RunScript_OutputArrayPushPersists(t *testing.T) {
+	se := NewScriptEngine()
+	defer se.Close()
+
+	// Script 1: initialise + push within same script. With the bug, the
+	// final output.list would be []; with the fix it must be ["a"].
+	if err := se.RunScript(`output.list = []; output.list.push("a"); output.firstLen = output.list.length`, nil); err != nil {
+		t.Fatalf("init RunScript: %v", err)
+	}
+	if got := se.GetVariable("firstLen"); got != "1" {
+		t.Errorf("after init, output.list.length = %q, want \"1\" (push within script must persist)", got)
+	}
+
+	// Script 2: push from a separate RunScript call. Must see the existing
+	// element and append; after this output.list should be ["a","b"].
+	if err := se.RunScript(`output.list.push("b"); output.secondLen = output.list.length`, nil); err != nil {
+		t.Fatalf("push RunScript: %v", err)
+	}
+	if got := se.GetVariable("secondLen"); got != "2" {
+		t.Errorf("after second push, output.list.length = %q, want \"2\" (push across scripts must persist)", got)
+	}
+
+	out := se.GetOutput()
+	list, ok := out["list"].([]interface{})
+	if !ok {
+		t.Fatalf("output.list type = %T, want []interface{}", out["list"])
+	}
+	if len(list) != 2 || list[0] != "a" || list[1] != "b" {
+		t.Errorf("output.list = %v, want [a b]", list)
+	}
+}
+
+// TestScriptEngine_RunScript_OutputNestedObjectMutation guards the same Bug B
+// for object-shaped values: `output.user.name = "x"` must persist.
+func TestScriptEngine_RunScript_OutputNestedObjectMutation(t *testing.T) {
+	se := NewScriptEngine()
+	defer se.Close()
+
+	if err := se.RunScript(`output.user = {}; output.user.name = "Sina"; output.user.count = 1`, nil); err != nil {
+		t.Fatalf("RunScript: %v", err)
+	}
+	if err := se.RunScript(`output.user.count = output.user.count + 1`, nil); err != nil {
+		t.Fatalf("RunScript inc: %v", err)
+	}
+
+	out := se.GetOutput()
+	user, ok := out["user"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("output.user type = %T, want map[string]interface{}", out["user"])
+	}
+	if user["name"] != "Sina" {
+		t.Errorf("output.user.name = %v, want Sina", user["name"])
+	}
+	// Goja exports JS numbers as int64 when they have no fractional part.
+	if got := user["count"]; got != int64(2) && got != float64(2) {
+		t.Errorf("output.user.count = %v (%T), want 2", got, got)
+	}
+}
+
+// TestScriptEngine_RunScript_OutputWholeArrayReassign locks in that the
+// existing whole-value-reassign workaround keeps working — users who already
+// rely on it shouldn't see any behavior change.
+func TestScriptEngine_RunScript_OutputWholeArrayReassign(t *testing.T) {
+	se := NewScriptEngine()
+	defer se.Close()
+
+	if err := se.RunScript(`output.items = [1, 2, 3]`, nil); err != nil {
+		t.Fatalf("RunScript: %v", err)
+	}
+	out := se.GetOutput()
+	items, ok := out["items"].([]interface{})
+	if !ok || len(items) != 3 {
+		t.Fatalf("output.items = %v, want [1 2 3]", out["items"])
+	}
+}
+
+// TestScriptEngine_RunScript_RepeatedConstNoCollision guards Bug A from #70:
+// running the same script twice (or two scripts that both declare a top-
+// level `const word`) must not collide. Before the fix, Goja's shared global
+// scope produced `SyntaxError: Identifier 'word' has already been declared`
+// on the second invocation. The IIFE wrap moves user declarations into a
+// per-invocation function scope.
+func TestScriptEngine_RunScript_RepeatedConstNoCollision(t *testing.T) {
+	se := NewScriptEngine()
+	defer se.Close()
+
+	const userScript = `const word = "hello"; output.last = word`
+
+	if err := se.RunScript(userScript, nil); err != nil {
+		t.Fatalf("first RunScript: %v", err)
+	}
+	if err := se.RunScript(userScript, nil); err != nil {
+		t.Fatalf("second RunScript collision: %v (issue #70 Bug A regression)", err)
+	}
+	if got := se.GetVariable("last"); got != "hello" {
+		t.Errorf("output.last = %q, want \"hello\"", got)
+	}
+}
+
+// TestScriptEngine_RunScript_TopLevelLetAlsoIsolated covers `let` for the
+// same reason as `const` — the IIFE wrap should isolate it too.
+func TestScriptEngine_RunScript_TopLevelLetAlsoIsolated(t *testing.T) {
+	se := NewScriptEngine()
+	defer se.Close()
+
+	const userScript = `let counter = 0; counter = counter + 1; output.tick = counter`
+	for i := 0; i < 3; i++ {
+		if err := se.RunScript(userScript, nil); err != nil {
+			t.Fatalf("RunScript iteration %d: %v", i, err)
+		}
+	}
+	// counter is function-scoped per invocation, so each call sees fresh 0,
+	// increments to 1. output.tick should be "1" after the loop.
+	if got := se.GetVariable("tick"); got != "1" {
+		t.Errorf("output.tick = %q, want \"1\" (per-invocation scope)", got)
+	}
+}
+
 func TestScriptEngine_EvalCondition(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()

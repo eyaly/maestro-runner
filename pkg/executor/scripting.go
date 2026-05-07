@@ -162,6 +162,15 @@ func expandDollarVar(text, name, value string) string {
 }
 
 // RunScript executes a JavaScript script.
+//
+// The user's script body runs inside an IIFE so that top-level `const`/`let`/
+// `var`/`function` declarations are function-scoped to this invocation. This
+// matches Maestro CLI semantics (each runScript gets a fresh scope) and
+// avoids the `SyntaxError: Identifier 'foo' has already been declared`
+// collision that hits any flow that runs the same script — or two scripts
+// declaring the same name — more than once (issue #70). State that should
+// outlive a single runScript call still goes through the global `output`
+// bag, exactly as documented.
 func (se *ScriptEngine) RunScript(script string, env map[string]string) error {
 	// Expand variables in script
 	script = se.ExpandVariables(script)
@@ -178,8 +187,10 @@ func (se *ScriptEngine) RunScript(script string, env map[string]string) error {
 		se.js.DefineUndefinedIfMissing(name)
 	}
 
-	// Execute script
-	if err := se.js.RunScript(script); err != nil {
+	// Execute the user script inside an IIFE for fresh-scope semantics.
+	// The leading newline preserves source-line numbers in error messages.
+	wrapped := "(function(){\n" + script + "\n})()"
+	if err := se.js.RunScript(wrapped); err != nil {
 		return err
 	}
 

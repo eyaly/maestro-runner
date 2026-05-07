@@ -72,8 +72,12 @@ func (e *Engine) setupBuiltins() {
 		logger.Warn("failed to set JS runtime global 'http': %v", err)
 	}
 
-	// Output object (for storing values to pass back to flow)
-	if err := e.runtime.Set("output", e.output); err != nil {
+	// Output object (for storing values to pass back to flow).
+	// Use a JS-native object rather than a proxy over the Go-side map so that
+	// nested mutations (e.g. `output.list.push("a")`) actually persist —
+	// proxying a Go map exports nested values as fresh wrappers each read,
+	// silently dropping in-place mutations (issue #70).
+	if err := e.runtime.Set("output", e.runtime.NewObject()); err != nil {
 		logger.Warn("failed to set JS runtime global 'output': %v", err)
 	}
 
