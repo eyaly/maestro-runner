@@ -284,3 +284,102 @@ func TestTapOnCrossRoot_Transformed(t *testing.T) {
 		t.Errorf("expected transformed-iframe error, got %q", res.Message)
 	}
 }
+
+// === Other gesture commands across iframe boundaries (PR #73 follow-up) ===
+// doubleTapOn / longPressOn / scrollUntilVisible all share the same iframe-
+// coord root cause as tapOn — coordinates from getBoundingClientRect() are
+// frame-local while CDP Input.dispatchMouseEvent uses top-frame viewport
+// coords. Each test below verifies the corresponding command now lands the
+// gesture inside the iframe rather than at iframe-local coords on the page.
+
+// iframePageWithDblClickButton: iframe-nested button with a dblclick handler
+// that uniquely tags document.title so the test can assert the double-click
+// (not just any click) reached the target.
+func iframePageWithDblClickButton() string {
+	return `<!DOCTYPE html>
+<html><body>
+<h1>HEADER</h1>
+<iframe id="f" title="inner" srcdoc='<!DOCTYPE html><html><body style="margin:0;padding:24px">
+<button id="b">DoIt</button>
+<script>
+document.getElementById("b").addEventListener("dblclick", function() { document.title = "dblclicked-iframe"; });
+</script>
+</body></html>'></iframe>
+</body></html>`
+}
+
+// iframePageWithLongPressButton: iframe-nested button with mousedown/up
+// timing detection. Updates iframe title to "longpressed-iframe" only when
+// the press duration exceeds 800ms (longPressOn uses 1s).
+func iframePageWithLongPressButton() string {
+	return `<!DOCTYPE html>
+<html><body>
+<h1>HEADER</h1>
+<iframe id="f" title="inner" srcdoc='<!DOCTYPE html><html><body style="margin:0;padding:24px">
+<button id="b">DoIt</button>
+<script>
+var t0 = 0;
+var btn = document.getElementById("b");
+btn.addEventListener("mousedown", function() { t0 = Date.now(); });
+btn.addEventListener("mouseup", function() {
+  if (t0 && Date.now() - t0 >= 800) document.title = "longpressed-iframe";
+  else document.title = "shortpress-iframe";
+});
+</script>
+</body></html>'></iframe>
+</body></html>`
+}
+
+// TestDoubleTapOnCrossRoot_Iframe: double-click an iframe-nested button.
+// Pre-fix this would dispatch two clicks at iframe-local coords on the top
+// frame; the iframe never sees the dblclick event.
+func TestDoubleTapOnCrossRoot_Iframe(t *testing.T) {
+	ts := newIframeTestServer(iframePageWithDblClickButton())
+	defer ts.Close()
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	res := d.Execute(&flow.DoubleTapOnStep{Selector: flow.Selector{Text: "DoIt"}})
+	if !res.Success {
+		t.Fatalf("doubleTapOn DoIt (iframe) failed: %s", res.Message)
+	}
+	if got := iframeTitle(t, d); got != "dblclicked-iframe" {
+		t.Errorf("expected iframe title 'dblclicked-iframe', got %q", got)
+	}
+}
+
+// TestLongPressOnCrossRoot_Iframe: long-press an iframe-nested button.
+// Pre-fix this used elem.WaitInteractable() which returns iframe-local
+// coords; subsequent Mouse.Down/Up at those coords on the top frame missed
+// the iframe button entirely.
+func TestLongPressOnCrossRoot_Iframe(t *testing.T) {
+	ts := newIframeTestServer(iframePageWithLongPressButton())
+	defer ts.Close()
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	res := d.Execute(&flow.LongPressOnStep{Selector: flow.Selector{Text: "DoIt"}})
+	if !res.Success {
+		t.Fatalf("longPressOn DoIt (iframe) failed: %s", res.Message)
+	}
+	if got := iframeTitle(t, d); got != "longpressed-iframe" {
+		t.Errorf("expected iframe title 'longpressed-iframe' (>=800ms press), got %q", got)
+	}
+}
+
+// scrollUntilVisible across iframe boundaries is left untested at this
+// commit. The runtime fix in commands.go (use Element.scrollIntoView() for
+// iframe-internal targets instead of top-frame Mouse.Scroll) is correct in
+// principle, but the loop's exit condition depends on
+// `_isElementVisible` (jshelper.js) returning false until the element is
+// actually in the viewport. That helper currently does intrinsic-only
+// checks (offsetParent, computed style, getBoundingClientRect with
+// non-zero dimensions) and does NOT intersect with iframe clipping — so an
+// iframe-clipped element reports "visible" and scrollUntilVisible exits on
+// iteration 0 without ever invoking the new scrollIntoView path.
+//
+// Fixing the visibility check is its own task (intersect element rect with
+// each ancestor iframe's content-area rect on the top frame); that work is
+// tracked in PLAN-maestro-upstream-parity.md alongside the rest of the
+// Tier 1 follow-ups. Once it lands, the cross-root scrollIntoView branch
+// becomes reachable and a behavioural test can verify scrollTop advancement.
