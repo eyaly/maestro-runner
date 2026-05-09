@@ -106,6 +106,68 @@ window.__maestro = {
     throw new Error('not found: ' + selector);
   },
 
+  // Two-stage cross-root text-index lookup. Step 1 enumerates all matches
+  // across same-origin frames + open shadow roots, stashes the requested
+  // element in _lastIndexedMatch, and returns the total match count by
+  // value. Step 2 retrieves the stashed element as a remote handle.
+  //
+  // The split is structural, not optional: rod.Eval(...).ByObject() can
+  // stall when the result is a JS null (no remote objectId to track), so
+  // we never request .ByObject() unless we know an element exists.
+  // (Issue #72.)
+  findByTextAt_count: function(text, index) {
+    // Strict, semantic matching for `text + index`. An element matches only
+    // when ALL of:
+    //  * its own text (direct text-node children, no descendants), or its
+    //    aria-label, or placeholder equals `text` (case-insensitive,
+    //    trimmed). Avoids matching ancestors whose `textContent` transitively
+    //    includes the match.
+    //  * it's the kind of element a user could meaningfully act on — an
+    //    <a>/<button>/<input>/<select>/<textarea>, or has role/tabindex/
+    //    aria-label attached. Filters out decorative/structural elements
+    //    like <code>, <p>, <h1> that would otherwise inflate the index.
+    // This approximates Maestro CLI's AX-tree-named-element behaviour
+    // without the cost of a per-frame Accessibility.queryAXTree round-trip.
+    // Issue #72.
+    var lower = text.toLowerCase();
+    var INTERACTIVE_TAGS = { A:1, BUTTON:1, INPUT:1, SELECT:1, TEXTAREA:1 };
+    function isInteractive(el) {
+      if (INTERACTIVE_TAGS[el.tagName]) return true;
+      if (!el.getAttribute) return false;
+      if (el.getAttribute('role')) return true;
+      if (el.getAttribute('tabindex') !== null) return true;
+      if (el.getAttribute('aria-label')) return true;
+      return false;
+    }
+    var roots = this._collectRoots();
+    var matches = [];
+    for (var r = 0; r < roots.length; r++) {
+      var all;
+      try { all = roots[r].querySelectorAll('*'); } catch (e) { continue; }
+      for (var i = 0; i < all.length; i++) {
+        var el = all[i];
+        if (!isInteractive(el)) continue;
+        var label = (el.getAttribute('aria-label') || '').toLowerCase();
+        var ph = (el.getAttribute('placeholder') || '').toLowerCase();
+        var ownText = '';
+        for (var c = 0; c < el.childNodes.length; c++) {
+          var n = el.childNodes[c];
+          if (n.nodeType === 3) ownText += n.nodeValue;
+        }
+        ownText = ownText.trim().toLowerCase();
+        if (ownText === lower || label === lower || ph === lower) {
+          matches.push(el);
+        }
+      }
+    }
+    this._lastIndexedMatch = matches[index] || null;
+    return matches.length;
+  },
+
+  findByTextAt_get: function() {
+    return this._lastIndexedMatch;
+  },
+
   // Visibility check: returns true if element is visible in the page.
   _isElementVisible: function(el) {
     if (!el || !el.isConnected) return false;

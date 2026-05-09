@@ -176,6 +176,13 @@ func (d *Driver) findByID(sel flow.Selector) (*rod.Element, *core.ElementInfo, e
 // 1. AX tree query (clickable roles first, then input roles, then all roles)
 // 2. Rod page.Search() fallback (Shadow DOM support)
 // 3. JS fallback (last resort)
+//
+// When the selector specifies an `index`/`nth` slot, we bypass the AX-tree
+// cascade entirely: AX queries root at the top-frame body and don't
+// enumerate cross-frame / shadow-DOM matches, which would silently make
+// `index: N` resolve to the closest in-range top-frame match. Instead use
+// the JS helper that walks every same-origin root and indexes deterministically
+// (issue #72).
 func (d *Driver) findByText(sel flow.Selector) (*rod.Element, *core.ElementInfo, error) {
 	text := sel.Text
 
@@ -185,6 +192,10 @@ func (d *Driver) findByText(sel flow.Selector) (*rod.Element, *core.ElementInfo,
 		regexSel.TextRegex = text
 		regexSel.Text = ""
 		return d.findByTextRegex(regexSel)
+	}
+
+	if nth := sel.EffectiveNth(); nth > 0 {
+		return d.findByTextAtAcrossRoots(text, nth, sel)
 	}
 
 	// Stage 1a: AX tree — clickable roles
@@ -554,6 +565,46 @@ func (d *Driver) findByCSSAcrossFrames(css string, sel flow.Selector, desc strin
 	}
 	if !d.matchesStateFilters(elem, sel) {
 		return nil, nil, fmt.Errorf("%s found across frames but state filters don't match", desc)
+	}
+	info := d.elementInfo(elem)
+	return elem, info, nil
+}
+
+// findByTextAtAcrossRoots returns the Nth (0-based) text match across every
+// same-origin root reachable from the top frame — top doc, same-origin
+// iframe documents, and open shadow roots. This is the index-aware sibling
+// of findByCSSAcrossFrames and the cross-root sibling of findByText's
+// AX-tree cascade. AX-tree queries root at the top-frame body and can't
+// enumerate iframe / shadow-DOM matches, so combining `text` + `nth` used
+// to silently fall back to the closest in-range top-frame element (issue
+// #72). Routing index-bearing text selectors through this path makes the
+// match list deterministic and surfaces a clear out-of-range error.
+func (d *Driver) findByTextAtAcrossRoots(text string, nth int, sel flow.Selector) (*rod.Element, *core.ElementInfo, error) {
+	// Two-stage call: count first (by value), then fetch element only when
+	// the index is in range. Avoids rod.Eval(...).ByObject() ever resolving
+	// against a JS null, which can stall the eval pipe (no remote objectId
+	// to track).
+	countRes, err := d.page.Evaluate(rod.Eval(`(t, n) => window.__maestro.findByTextAt_count(t, n)`, text, nth))
+	if err != nil {
+		return nil, nil, fmt.Errorf("text '%s' index %d: %w", text, nth, err)
+	}
+	count := 0
+	if countRes != nil {
+		count = countRes.Value.Int()
+	}
+	if nth >= count {
+		return nil, nil, fmt.Errorf("text '%s' index %d: only %d match(es) found across same-origin roots", text, nth, count)
+	}
+	res, err := d.page.Evaluate(rod.Eval(`() => window.__maestro.findByTextAt_get()`).ByObject())
+	if err != nil {
+		return nil, nil, fmt.Errorf("text '%s' index %d: %w", text, nth, err)
+	}
+	elem, err := d.page.ElementFromObject(res)
+	if err != nil {
+		return nil, nil, fmt.Errorf("text '%s' index %d: element from object failed: %w", text, nth, err)
+	}
+	if !d.matchesStateFilters(elem, sel) {
+		return nil, nil, fmt.Errorf("text '%s' index %d found but state filters don't match", text, nth)
 	}
 	info := d.elementInfo(elem)
 	return elem, info, nil
