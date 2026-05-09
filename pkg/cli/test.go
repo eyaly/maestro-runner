@@ -1059,7 +1059,7 @@ func determineExecutionMode(cfg *RunConfig, emulatorMgr *emulator.Manager, simul
 			deviceIDs = cfg.Devices
 		} else if cfg.Parallel > 0 {
 			// Try to auto-detect existing available devices (not in use)
-			existingDevices, detectErr := autoDetectDevices(cfg.Platform, cfg.Parallel)
+			existingDevices, detectErr := autoDetectDevicesFn(cfg.Platform, cfg.Parallel)
 			if detectErr != nil && !cfg.AutoStartEmulator {
 				// No devices and auto-start disabled - show helpful error
 				return false, nil, buildParallelDeviceError(cfg, 0)
@@ -2115,6 +2115,10 @@ func isSocketInUse(socketPath string) bool {
 	// Check if the owning process is still alive via PID file
 	return device.IsOwnerAlive(socketPath)
 }
+
+// autoDetectDevicesFn is the device-discovery function used by
+// determineExecutionMode. Tests override it to make discovery hermetic.
+var autoDetectDevicesFn = autoDetectDevices
 
 // autoDetectDevices finds N available devices for the specified platform.
 // Returns device IDs that can be used for parallel execution.
