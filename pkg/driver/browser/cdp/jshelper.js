@@ -488,6 +488,25 @@ window.__maestro = {
     return null;
   },
 
+  // _isInFlutterContext: walks up (piercing shadow boundaries) and returns
+  // true if the node lives inside a Flutter Web app — i.e. has any ancestor
+  // with a Flutter-namespaced tag (`flutter-view` or `flt-*`). Real Flutter
+  // Web DOMs vary by embedder/version: in some <flutter-view> wraps both the
+  // canvas and <flt-semantics-host>; in others <flt-semantics-host> is a
+  // SIBLING of <flutter-view> (semantics tree rendered separately for screen
+  // readers). Either layout is "inside Flutter" for hit-target purposes —
+  // Flutter's pointer router intercepts events through its glass pane and
+  // dispatches to semantics via its own internal hit testing.
+  _isInFlutterContext: function(node) {
+    var n = node;
+    while (n) {
+      var tag = n.tagName ? n.tagName.toLowerCase() : '';
+      if (tag === 'flutter-view' || tag.indexOf('flt-') === 0) return true;
+      n = this._parentElementOrShadowHost(n);
+    }
+    return false;
+  },
+
   // _isInIframe: cheap check used by Go to decide whether to use the new
   // coord-translated dispatch path. True iff the element's owner document has
   // a non-null frameElement (i.e. it lives inside an iframe at any depth).
@@ -624,7 +643,24 @@ window.__maestro = {
       hitElement = hitElement.assignedSlot || this._parentElementOrShadowHost(hitElement);
     }
     if (hitElement === targetElement) return 'done';
-    var description = this._previewNode(hitParents[0] || document.documentElement);
+    // Flutter Web concession: <flutter-view> (and the legacy <flt-glass-pane>)
+    // acts as a glass pane that intercepts every pointer event and routes it
+    // to the appropriate <flt-semantics> action via Flutter's internal hit
+    // testing. The accessibility tree may live in light DOM under flutter-
+    // view, in its shadow root, or as a sibling <flt-semantics-host> with the
+    // rendering canvas stacked above — either way DOM elementsFromPoint at a
+    // semantics target returns the canvas / glass pane, never the semantics
+    // node. A strict same-element walk-up would therefore always report false
+    // occlusion and refuse to dispatch. Accept when both target and the hit
+    // element are inside the same Flutter app's iframe — Flutter will route
+    // the trusted click to the right semantics action.
+    var topHit = hitParents[0];
+    if (topHit && this._isInFlutterContext(targetElement) &&
+        this._isInFlutterContext(topHit) &&
+        targetElement.ownerDocument === topHit.ownerDocument) {
+      return 'done';
+    }
+    var description = this._previewNode(topHit || document.documentElement);
     return { hitTargetDescription: description };
   },
 
@@ -694,7 +730,11 @@ window.__maestro = {
     var token = this._hitTargetNextToken++;
     var win = targetElement.ownerDocument && targetElement.ownerDocument.defaultView;
     if (!win) return { error: '<target window unavailable>' };
-    var state = { captured: false, result: undefined, target: targetElement, win: win };
+    var inFlutter = this._isInFlutterContext(targetElement);
+    var state = {
+      captured: false, result: undefined, target: targetElement, win: win,
+      inFlutter: inFlutter
+    };
     this._hitTargetState[token] = state;
 
     var listener = function(ev) {
@@ -722,17 +762,21 @@ window.__maestro = {
     return { token: token };
   },
 
-  // pollHitTargetResult: returns the captured verify outcome for a token, or
-  // 'pending' if the listener hasn't fired yet. Caller should poll a few
-  // times after dispatch (a real trusted pointerdown is delivered
-  // synchronously to JS during Mouse.Click, so 'pending' should be rare —
-  // but a brief retry window absorbs scheduler jitter).
+  // pollHitTargetResult: returns the captured verify outcome for a token.
+  // Caller should poll a few times after dispatch (a real trusted pointerdown
+  // is delivered synchronously to JS during Mouse.Click, so 'pending' should
+  // be rare — but a brief retry window absorbs scheduler jitter).
+  //
+  // Always returns an object with a `status` field:
+  //   { status: 'done' }                                 → success
+  //   { status: 'pending', inFlutter: bool }             → trusted event not seen yet
+  //   { status: 'failed', hitTargetDescription: string } → landed on the wrong element
   //
   // After returning a non-'pending' result, the token is cleaned up.
   pollHitTargetResult: function(token) {
     var state = this._hitTargetState[token];
-    if (!state) return 'done'; // unknown token → don't block caller
-    if (!state.captured) return 'pending';
+    if (!state) return { status: 'done' }; // unknown token → don't block caller
+    if (!state.captured) return { status: 'pending', inFlutter: !!state.inFlutter };
     var r = state.result;
     // Cleanup listener if still attached (defensive — listener removes itself
     // on capture, but if the click never fired we want to stop leaking).
@@ -741,7 +785,13 @@ window.__maestro = {
       state.win.removeEventListener('mousedown', state.listener, true);
     } catch (e) {}
     delete this._hitTargetState[token];
-    return r;
+    // Normalize the listener-stashed expectHitTarget result into the unified
+    // shape. expectHitTarget returns 'done' or { hitTargetDescription }.
+    if (r === 'done') return { status: 'done' };
+    if (r && typeof r === 'object' && 'hitTargetDescription' in r) {
+      return { status: 'failed', hitTargetDescription: r.hitTargetDescription };
+    }
+    return { status: 'done' }; // defensive fallback
   },
 
   // disposeHitTargetInterceptor: called by Go to abandon a token without
