@@ -225,6 +225,10 @@ func (d *Driver) doubleTapOn(step *flow.DoubleTapOnStep) *core.CommandResult {
 		return errorResult(err, fmt.Sprintf("Failed to find element %s", step.Selector.DescribeQuoted()))
 	}
 
+	if err := d.waitForActionable(elem, defaultActionableTimeoutMs); err != nil {
+		return errorResult(err, fmt.Sprintf("Element not actionable: %s", step.Selector.DescribeQuoted()))
+	}
+
 	// Iframe / shadow-root branch — same coord-translation issue as tapOn.
 	// Top-frame elements keep the existing Rod path (correct for them).
 	inIframe, _ := elem.Eval(`() => window.__maestro._isInIframe(this)`)
@@ -251,6 +255,10 @@ func (d *Driver) longPressOn(step *flow.LongPressOnStep) *core.CommandResult {
 	elem, info, err := d.findElement(step.Selector, isOptional(step.Selector.Optional), step.TimeoutMs)
 	if err != nil {
 		return errorResult(err, fmt.Sprintf("Failed to find element %s", step.Selector.DescribeQuoted()))
+	}
+
+	if err := d.waitForActionable(elem, defaultActionableTimeoutMs); err != nil {
+		return errorResult(err, fmt.Sprintf("Element not actionable: %s", step.Selector.DescribeQuoted()))
 	}
 
 	// Iframe / shadow-root branch — coord translation + hit-target verify.
@@ -479,6 +487,9 @@ func (d *Driver) inputText(step *flow.InputTextStep) *core.CommandResult {
 		elem, _, err := d.findElement(step.Selector, isOptional(step.Selector.Optional), step.TimeoutMs)
 		if err != nil {
 			return errorResult(err, fmt.Sprintf("Failed to find element %s", step.Selector.DescribeQuoted()))
+		}
+		if err := d.waitForActionable(elem, defaultActionableTimeoutMs); err != nil {
+			return errorResult(err, fmt.Sprintf("Element not actionable: %s", step.Selector.DescribeQuoted()))
 		}
 		if err := elem.Input(step.Text); err != nil {
 			return errorResult(err, "Failed to input text")
