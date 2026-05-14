@@ -82,6 +82,11 @@ Examples:
 			Aliases: []string{"e"},
 			Usage:   "Environment variables (KEY=VALUE)",
 		},
+		&cli.StringFlag{
+			Name:    "env-file",
+			Usage:   "Path to .env file (KEY=VALUE per line, # comments, single/double quoting)",
+			EnvVars: []string{"MAESTRO_ENV_FILE"},
+		},
 
 		// Tag filtering
 		&cli.StringSliceFlag{
@@ -590,15 +595,30 @@ func runTest(c *cli.Context) error {
 		}
 	}
 
-	// Merge env variables: workspace config env + CLI env (CLI takes precedence)
+	// Load --env-file if specified. Values from the file slot between the
+	// workspace config (lowest precedence) and -e CLI flags (highest).
+	var envFileVars map[string]string
+	if envFilePath := getString("env-file"); envFilePath != "" {
+		var err error
+		envFileVars, err = ParseEnvFile(envFilePath)
+		if err != nil {
+			return fmt.Errorf("env-file: %w", err)
+		}
+	}
+
+	// Merge env variables. Precedence (lowest → highest):
+	//   workspace config Env  <  --env-file values  <  -e CLI flag values
 	mergedEnv := make(map[string]string)
 	if workspaceConfig != nil {
 		for k, v := range workspaceConfig.Env {
 			mergedEnv[k] = v
 		}
 	}
+	for k, v := range envFileVars {
+		mergedEnv[k] = v // --env-file overrides workspace config
+	}
 	for k, v := range env {
-		mergedEnv[k] = v // CLI overrides workspace config
+		mergedEnv[k] = v // -e CLI overrides --env-file and workspace config
 	}
 
 	// Get appId from workspace config or will be extracted from flows later
