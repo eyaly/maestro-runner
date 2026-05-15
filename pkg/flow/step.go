@@ -503,12 +503,17 @@ type RetryStep struct {
 }
 
 // RunFlowStep runs another flow.
+//
+// When `when:` evaluates false, execution falls through to the else branch
+// (ElseFile / ElseSteps). If no else branch is set, the step is skipped.
 type RunFlowStep struct {
-	BaseStep `yaml:",inline"`
-	File     string            `yaml:"file"`
-	Steps    []Step            `yaml:"-"` // Inline steps
-	When     *Condition        `yaml:"when"`
-	Env      map[string]string `yaml:"env"`
+	BaseStep  `yaml:",inline"`
+	File      string            `yaml:"file"`
+	Steps     []Step            `yaml:"-"` // Inline steps (commands)
+	ElseFile  string            `yaml:"-"` // Fallback flow file when `when` is false
+	ElseSteps []Step            `yaml:"-"` // Inline fallback steps (else / elseCommands)
+	When      *Condition        `yaml:"when"`
+	Env       map[string]string `yaml:"env"`
 }
 
 // RunScriptStep runs a script.

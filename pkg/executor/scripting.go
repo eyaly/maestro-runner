@@ -578,6 +578,7 @@ func (se *ScriptEngine) ExpandStep(step flow.Step) {
 		s.Key = se.ExpandVariables(s.Key)
 	case *flow.RunFlowStep:
 		s.File = se.ExpandVariables(s.File)
+		s.ElseFile = se.ExpandVariables(s.ElseFile)
 		if s.When != nil {
 			if s.When.Visible != nil {
 				s.When.Visible = se.expandSelector(s.When.Visible)
